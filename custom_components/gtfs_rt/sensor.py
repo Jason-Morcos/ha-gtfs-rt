@@ -109,7 +109,7 @@ class PublicTransportSensor(Entity):
     def state(self):
         """Return the state of the sensor."""
         next_buses = self._get_next_buses()
-        return due_in_minutes(next_buses[0].arrival_time) if len(next_buses) > 0 else '-'
+        return due_in_minutes(next_buses[0].arrival_time) if len(next_buses) > 0 else None
 
     @property
     def extra_state_attributes(self):
@@ -130,17 +130,17 @@ class PublicTransportSensor(Entity):
             ATTR_ROUTE: self._route
         }
         if len(next_buses) > 0:
-            attrs[ATTR_DUE_AT] = next_buses[0].arrival_time.strftime(TIME_STR_FORMAT) if len(next_buses) > 0 else '-'
-            attrs[ATTR_OCCUPANCY] = next_buses[0].occupancy
-            attrs[ATTR_DELAYED_BY] = next_buses[0].delay
+            attrs[ATTR_DUE_AT] = next_buses[0].arrival_time.strftime(TIME_STR_FORMAT) if len(next_buses) > 0 else None
+            attrs[ATTR_OCCUPANCY] = next_buses[0].occupancy if len(next_buses) > 0 else None
+            attrs[ATTR_DELAYED_BY] = next_buses[0].delay / 60.0 if (len(next_buses) > 0 and next_buses[0].delay) else None
             if next_buses[0].position:
                 attrs[ATTR_LATITUDE] = next_buses[0].position.latitude
                 attrs[ATTR_LONGITUDE] = next_buses[0].position.longitude
         if len(next_buses) > 1:
-            attrs[ATTR_NEXT_UP] = next_buses[1].arrival_time.strftime(TIME_STR_FORMAT) if len(next_buses) > 1 else '-'
-            attrs[ATTR_NEXT_UP_DUE_IN] = due_in_minutes(next_buses[1].arrival_time) if len(next_buses) > 1 else '-'
-            attrs[ATTR_NEXT_OCCUPANCY] = next_buses[1].occupancy
-            attrs[ATTR_NEXT_DELAYED_BY] = next_buses[1].delay
+            attrs[ATTR_NEXT_UP] = next_buses[1].arrival_time.strftime(TIME_STR_FORMAT) if len(next_buses) > 1 else None
+            attrs[ATTR_NEXT_UP_DUE_IN] = due_in_minutes(next_buses[1].arrival_time) if len(next_buses) > 1 else None
+            attrs[ATTR_NEXT_OCCUPANCY] = next_buses[1].occupancy if len(next_buses) > 1 else None
+            attrs[ATTR_NEXT_DELAYED_BY] = next_buses[1].delay / 60.0 if (len(next_buses) > 1 and next_buses[1].delay) else None
         return attrs
 
     @property
