@@ -19,9 +19,11 @@ ATTR_STOP_ID = "Stop ID"
 ATTR_ROUTE = "Route"
 ATTR_DUE_IN = "Due in"
 ATTR_DUE_AT = "Due at"
+ATTR_DELAYED_BY = "Delayed by"
 ATTR_OCCUPANCY = "Occupancy"
 ATTR_NEXT_UP = "Next bus"
 ATTR_NEXT_UP_DUE_IN = "Next bus due in"
+ATTR_NEXT_DELAYED_BY = "Next bus delayed by"
 ATTR_NEXT_OCCUPANCY = "Next bus occupancy"
 
 CONF_API_KEY = 'api_key'
@@ -118,6 +120,7 @@ class PublicTransportSensor(Entity):
             ATTR_STOP_ID: self._stop,
             ATTR_ROUTE: self._route,
             ATTR_DUE_AT: None,
+            ATTR_DELAYED_BY: None,
             ATTR_OCCUPANCY: None,
             ATTR_LATITUDE: None,
             ATTR_LONGITUDE: None,
@@ -128,6 +131,7 @@ class PublicTransportSensor(Entity):
         if len(next_buses) > 0:
             attrs[ATTR_DUE_AT] = next_buses[0].arrival_time.strftime(TIME_STR_FORMAT) if len(next_buses) > 0 else '-'
             attrs[ATTR_OCCUPANCY] = next_buses[0].occupancy
+            attrs[ATTR_DELAYED_BY] = next_buses[0].delay
             if next_buses[0].position:
                 attrs[ATTR_LATITUDE] = next_buses[0].position.latitude
                 attrs[ATTR_LONGITUDE] = next_buses[0].position.longitude
@@ -135,6 +139,7 @@ class PublicTransportSensor(Entity):
             attrs[ATTR_NEXT_UP] = next_buses[1].arrival_time.strftime(TIME_STR_FORMAT) if len(next_buses) > 1 else '-'
             attrs[ATTR_NEXT_UP_DUE_IN] = due_in_minutes(next_buses[1].arrival_time) if len(next_buses) > 1 else '-'
             attrs[ATTR_NEXT_OCCUPANCY] = next_buses[1].occupancy
+            attrs[ATTR_NEXT_DELAYED_BY] = next_buses[1].delay
         return attrs
 
     @property
@@ -179,10 +184,11 @@ class PublicTransportData(object):
         from google.transit import gtfs_realtime_pb2
 
         class StopDetails:
-            def __init__(self, arrival_time, position, occupancy):
+            def __init__(self, arrival_time, position, occupancy, delay):
                 self.arrival_time = arrival_time
                 self.position = position
                 self.occupancy = occupancy
+                self.delay = delay
 
         feed = gtfs_realtime_pb2.FeedMessage()
         response = requests.get(self._trip_update_url, headers=self._headers)
@@ -207,12 +213,21 @@ class PublicTransportData(object):
                     if not departure_times[route_id].get(stop_id):
                         departure_times[route_id][stop_id] = []
                     # Keep only future arrival.time (gtfs data can give past arrival.time, which is useless and show negative time as result)
-                    if int(stop.arrival.time) > int(time.time()):
+                    if int(stop.departure.time) > int(time.time()):
                         # Use stop departure time; fall back on stop arrival time if not available
+                        details = StopDetails(
+                            datetime.datetime.fromtimestamp(stop.departure.time),
+                            vehicle_positions.get(vehicle_id),
+                            vehicle_occupancy.get(vehicle_id),
+                            stop.departure.delay
+                        )
+                        departure_times[route_id][stop_id].append(details)
+                    elif int(stop.arrival.time) > int(time.time()):
                         details = StopDetails(
                             datetime.datetime.fromtimestamp(stop.arrival.time),
                             vehicle_positions.get(vehicle_id),
-                            vehicle_occupancy.get(vehicle_id)
+                            vehicle_occupancy.get(vehicle_id),
+                            stop.arrival.delay
                         )
                         departure_times[route_id][stop_id].append(details)
 
