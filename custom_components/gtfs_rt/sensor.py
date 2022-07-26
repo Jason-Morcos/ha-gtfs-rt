@@ -117,16 +117,17 @@ class PublicTransportSensor(Entity):
         next_buses = self._get_next_buses()
         attrs = {
             ATTR_DUE_IN: self.state,
-            ATTR_STOP_ID: self._stop,
-            ATTR_ROUTE: self._route,
             ATTR_DUE_AT: None,
             ATTR_DELAYED_BY: None,
             ATTR_OCCUPANCY: None,
             ATTR_LATITUDE: None,
             ATTR_LONGITUDE: None,
-            ATTR_NEXT_UP: None,
             ATTR_NEXT_UP_DUE_IN: None,
-            ATTR_NEXT_OCCUPANCY: None
+            ATTR_NEXT_UP: None,
+            ATTR_NEXT_DELAYED_BY: None,
+            ATTR_NEXT_OCCUPANCY: None,
+            ATTR_STOP_ID: self._stop,
+            ATTR_ROUTE: self._route
         }
         if len(next_buses) > 0:
             attrs[ATTR_DUE_AT] = next_buses[0].arrival_time.strftime(TIME_STR_FORMAT) if len(next_buses) > 0 else '-'
