@@ -28,6 +28,7 @@ sensor:
     vehicle_position_url: 'https://data.texas.gov/download/eiei-9rpf/application%2Foctet-stream'
     departures:
     - name: Downtown to airport
+      unique_id: 3f2f8b2e-8ed2-4d7c-b2a6-9a8f0911b7a9
       route: 100
       stopid: 514
 ```
@@ -40,6 +41,7 @@ sensor:
   vehicle_position_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/vehicle-positions-for-agency/1.pb?key=TEST'
   departures:
   - name: "48 to Uni"
+    unique_id: 8af3e2dd-9f0a-4b84-8ec0-109c9d2a7c4f
     route: 100228
     stopid: 36800
 ```
@@ -53,6 +55,7 @@ sensor:
   apikey: <api key>
   departures:
   - name: "Bus 178"
+    unique_id: 4b38ec0f-7b3e-47c2-9ee0-1f6a4c1c7f54
     route: 168
     stopid: 56698 
 ```
@@ -65,6 +68,7 @@ sensor:
     x_api_key: <api key>
     departures:
       - name: "Brooklyn F"
+        unique_id: 0b45f0b3-1b02-49c8-96a2-cdcb12183947
         route: 'F'
         stopid: 'F16S'
 ```
@@ -77,6 +81,7 @@ sensor:
     vehicle_position_url: 'https://cdn.mbta.com/realtime/VehiclePositions.pb'
     departures:
       - name: "MBTA Red Line Kendall/MIT to Ashmont/Braintree"
+        unique_id: 7e8c7d6a-5c9c-46c4-8ab0-2a4b5a1c9a74
         route: 'Red'
         stopid: '70071'
 ```
@@ -87,6 +92,7 @@ Configuration variables:
 - **vehicle_position_url** (*Optional*): Provides live bus position tracking on the home assistant map
 - **headers**(*Optional*): Expects a dictionary. If provided, the dictionary will be sent as headers. (e.g. {"Authorization": "mykey"})
 - **departures** (*Required*): A list of routes and departure locations to watch
+- **unique_id** (*Optional*): A UUID for the entity to allow entity registry entries
 - **route** (*Optional*): The name of the gtfs route
 - **stopid** (*Optional*): The stopid for the location you want etas for
 
