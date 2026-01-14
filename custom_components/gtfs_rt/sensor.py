@@ -7,7 +7,7 @@ from enum import Enum
 import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
-from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE, CONF_NAME, UnitOfTime
+from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE, CONF_NAME, CONF_UNIQUE_ID, UnitOfTime
 import homeassistant.util.dt as dt_util
 from homeassistant.util import Throttle
 import homeassistant.helpers.config_validation as cv
@@ -51,6 +51,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_VEHICLE_POSITION_URL): cv.string,
     vol.Optional(CONF_DEPARTURES): [{
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_UNIQUE_ID): cv.uuid,
         vol.Required(CONF_STOP_ID): cv.string,
         vol.Required(CONF_ROUTE): cv.string
     }]
@@ -89,7 +90,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
             data,
             departure.get(CONF_STOP_ID),
             departure.get(CONF_ROUTE),
-            departure.get(CONF_NAME)
+            departure.get(CONF_NAME),
+            departure.get(CONF_UNIQUE_ID)
         ))
 
     add_devices(sensors, True)
@@ -98,7 +100,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
 class PublicTransportSensor(SensorEntity):
     """Implementation of a public transport sensor."""
 
-    def __init__(self, data, stop, route, name):
+    def __init__(self, data, stop, route, name, unique_id):
         """Initialize the sensor."""
         self.data = data
         self._stop = stop
@@ -106,6 +108,7 @@ class PublicTransportSensor(SensorEntity):
 
         self._attr_name = name
         self._attr_icon = ICON
+        self._attr_unique_id = str(unique_id) if unique_id else None
         self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
 
     def _get_next_buses(self):
