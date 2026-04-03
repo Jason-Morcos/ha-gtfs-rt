@@ -43,6 +43,7 @@ gtfs_rt:
     entity_namespace: gtfs_kingcountymetro
     trip_update_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/trip-updates-for-agency/1.pb?key=TEST'
     vehicle_position_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/vehicle-positions-for-agency/1.pb?key=TEST'
+    stop_arrivals_url_template: 'https://api.pugetsound.onebusaway.org/api/where/arrivals-and-departures-for-stop/1_{stop_id}.json?key=TEST&minutesBefore=0&minutesAfter=120'
     static_schedule_url: 'https://metro.kingcounty.gov/gtfs/google_transit.zip'
     departures:
       - name: "48 to Uni"
@@ -97,6 +98,7 @@ Configuration variables:
 - **entity_namespace** (*Optional*): Stable namespace used as the feed identifier during YAML import. Reusing the same value lets existing entities keep their entity IDs after migration.
 - **trip_update_url** (*Required*): Provides bus route etas. See the **Finding Feeds** section at the bottom of the page for more details on how to find these
 - **vehicle_position_url** (*Optional*): Provides live bus position tracking on the home assistant map
+- **stop_arrivals_url_template** (*Optional*): A stop-level arrivals endpoint template with a `{stop_id}` placeholder. When configured, it becomes the primary realtime source and is useful for agencies whose GTFS-RT TripUpdates omit the watched stops.
 - **static_schedule_url** (*Optional*): A static GTFS ZIP feed used to validate whether a stop is valid and whether service should currently exist. When configured, the entity stays `unknown` during normal no-service windows, and also stays `unknown` when a valid route/stop pair is missing from a truncated realtime stop list. It becomes `unavailable` when the route/stop is invalid or when the realtime feed itself cannot be fetched.
 - **headers**(*Optional*): Expects a dictionary. If provided, the dictionary will be sent as headers. (e.g. {"Authorization": "mykey"})
 - **departures** (*Required*): A list of routes and departure locations to watch
@@ -113,6 +115,8 @@ When `static_schedule_url` is configured, each sensor also adds:
 - `Problem reason`
 
 When the feed is configured under the top-level `gtfs_rt:` key, the integration imports it into a Home Assistant config entry. That allows each route to appear as its own service device, so a line like `372` can group all of your chosen stops under a single device.
+
+If both `trip_update_url` and `stop_arrivals_url_template` are configured, the stop-level arrivals endpoint is used as the primary realtime source and the trip-update feed remains available as a compatibility fallback in the configuration.
 
 The legacy `sensor: - platform: gtfs_rt` format still works, but it will not create route devices and is now considered deprecated.
 
