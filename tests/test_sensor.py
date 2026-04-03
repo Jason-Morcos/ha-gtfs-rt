@@ -208,6 +208,37 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(data.info, {"100214": {"1234": [future_departure]}})
         self.assertIsNone(data.last_trip_update_error)
 
+    def test_rate_limit_backoff_with_empty_cached_lists_falls_back_to_trip_updates(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("100214", "1234")],
+            static_schedule_url=None,
+            stop_arrivals_url_template="https://example.com/{stop_id}",
+        )
+        data._last_stop_arrival_info = {"100214": {"1234": []}}
+        data._stop_arrivals_backoff_until = now + dt.timedelta(minutes=2)
+        fallback_calls = []
+
+        def unexpected_get(*_args, **_kwargs):
+            raise AssertionError("requests.get should not run during stop-arrivals backoff")
+
+        def fallback_trip_updates(_positions, _vehicles_trips, _occupancy):
+            fallback_calls.append("fallback")
+            data.info = {"100214": {"1234": ["departure"]}}
+
+        sensor_module.requests.get = unexpected_get
+        data._update_route_statuses = fallback_trip_updates
+
+        data.update()
+
+        self.assertEqual(fallback_calls, ["fallback"])
+        self.assertEqual(data.info, {"100214": {"1234": ["departure"]}})
+        self.assertIsNone(data.last_trip_update_error)
+
 
 if __name__ == "__main__":
     unittest.main()

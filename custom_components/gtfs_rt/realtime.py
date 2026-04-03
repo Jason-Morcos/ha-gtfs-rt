@@ -29,13 +29,29 @@ def normalize_prefixed_id(value: str | None) -> str | None:
     return text
 
 
+def has_numeric_prefix(value: str | None) -> bool:
+    """Return whether an id uses a numeric agency prefix like `1_100214`."""
+    if value is None:
+        return False
+    text = str(value)
+    prefix, separator, _remainder = text.partition("_")
+    return bool(separator and prefix.isdigit())
+
+
 def route_id_matches(configured_route: str, observed_route: str | None) -> bool:
     """Match a configured route id against a provider route id."""
-    configured = normalize_prefixed_id(configured_route)
-    observed = normalize_prefixed_id(observed_route)
-    if configured is None or observed is None:
+    configured = str(configured_route)
+    if observed_route is None:
         return False
-    return configured == observed
+    observed = str(observed_route)
+
+    if has_numeric_prefix(configured):
+        return configured == observed
+
+    normalized_observed = normalize_prefixed_id(observed)
+    if normalized_observed is None:
+        return False
+    return configured == normalized_observed
 
 
 def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
