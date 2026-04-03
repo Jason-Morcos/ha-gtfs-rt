@@ -4,7 +4,7 @@
     "documentation": "https://github.com/Jason-Morcos/ha-gtfs-rt",
     "dependencies": [],
     "codeowners": ["@Jason-Morcos"],
-    "version": "1.1.0",
+    "version": "1.2.0",
     "requirements": [
         "gtfs-realtime-bindings==1.0.0"
     ]
