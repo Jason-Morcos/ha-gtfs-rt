@@ -14,6 +14,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.util import Throttle
 
+from .availability import should_mark_entity_unavailable
 from .config import FEED_CONFIG_SCHEMA, normalize_feed_config
 from .const import (
     CONF_DEPARTURES,
@@ -197,16 +198,11 @@ class PublicTransportSensor(SensorEntity):
     def available(self):
         next_buses = self._get_next_buses()
         schedule_status = self._get_schedule_status()
-
-        if self.data.last_trip_update_error:
-            return False
-        if schedule_status is None or schedule_status.status == STATUS_LOOKUP_FAILED:
-            return True
-        if schedule_status.is_config_problem:
-            return False
-        if schedule_status.status == STATUS_SERVICE_EXPECTED and len(next_buses) == 0:
-            return False
-        return True
+        return not should_mark_entity_unavailable(
+            last_trip_update_error=self.data.last_trip_update_error,
+            schedule_status=schedule_status,
+            has_realtime_departures=len(next_buses) > 0,
+        )
 
     @property
     def extra_state_attributes(self):

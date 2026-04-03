@@ -97,7 +97,7 @@ Configuration variables:
 - **entity_namespace** (*Optional*): Stable namespace used as the feed identifier during YAML import. Reusing the same value lets existing entities keep their entity IDs after migration.
 - **trip_update_url** (*Required*): Provides bus route etas. See the **Finding Feeds** section at the bottom of the page for more details on how to find these
 - **vehicle_position_url** (*Optional*): Provides live bus position tracking on the home assistant map
-- **static_schedule_url** (*Optional*): A static GTFS ZIP feed used to validate whether a stop is valid and whether service should currently exist. When configured, the entity stays `unknown` during normal no-service windows, but becomes `unavailable` when the route/stop is invalid or scheduled service should exist and the realtime feed has no matching departures.
+- **static_schedule_url** (*Optional*): A static GTFS ZIP feed used to validate whether a stop is valid and whether service should currently exist. When configured, the entity stays `unknown` during normal no-service windows, and also stays `unknown` when a valid route/stop pair is missing from a truncated realtime stop list. It becomes `unavailable` when the route/stop is invalid or when the realtime feed itself cannot be fetched.
 - **headers**(*Optional*): Expects a dictionary. If provided, the dictionary will be sent as headers. (e.g. {"Authorization": "mykey"})
 - **departures** (*Required*): A list of routes and departure locations to watch
 - **unique_id** (*Optional*): A UUID for the entity to allow entity registry entries
