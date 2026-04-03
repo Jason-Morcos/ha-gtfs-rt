@@ -1,0 +1,8 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This GTFS feed is already configured.",
+      "yaml_only": "This integration is configured from YAML via the gtfs_rt section."
+    }
+  }
+}

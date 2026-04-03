@@ -74,6 +74,7 @@ class StaticScheduleValidator:
         self._last_refresh: dt.datetime | None = None
         self._route_ids: set[str] = set()
         self._stop_ids: set[str] = set()
+        self._route_labels: dict[str, str] = {}
         self._route_stop_service_ids: dict[tuple[str, str], set[str]] = defaultdict(set)
         self._departures_by_service: dict[tuple[str, str, str], list[int]] = defaultdict(list)
         self._calendar: dict[str, tuple[set[int], dt.date, dt.date]] = {}
@@ -178,7 +179,11 @@ class StaticScheduleValidator:
             service_today=True,
             service_expected_now=service_expected_now,
             next_scheduled_departure=next_departure,
-        )
+            )
+
+    def get_route_label(self, route_id: str) -> str | None:
+        """Return a human-friendly route label when the static feed provides one."""
+        return self._route_labels.get(route_id)
 
     def _ensure_loaded(self, now: dt.datetime) -> None:
         if self._last_refresh and now - self._last_refresh < self._refresh_interval:
@@ -192,6 +197,7 @@ class StaticScheduleValidator:
     def _load_schedule_from_bytes(self, archive_bytes: bytes) -> None:
         self._route_ids.clear()
         self._stop_ids.clear()
+        self._route_labels.clear()
         self._route_stop_service_ids.clear()
         self._departures_by_service.clear()
         self._calendar.clear()
@@ -206,6 +212,11 @@ class StaticScheduleValidator:
                 route_id = row["route_id"]
                 if route_id in self._monitored_routes:
                     self._route_ids.add(route_id)
+                    self._route_labels[route_id] = (
+                        row.get("route_short_name")
+                        or row.get("route_long_name")
+                        or route_id
+                    )
 
         with archive.open("stops.txt") as stop_file:
             for row in csv.DictReader(io.TextIOWrapper(stop_file, "utf-8-sig")):
