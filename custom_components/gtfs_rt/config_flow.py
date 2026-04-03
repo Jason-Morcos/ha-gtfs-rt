@@ -26,7 +26,8 @@ class GTFSRtConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 continue
             if entry.data != data or entry.title != data[CONF_NAME]:
                 self.hass.config_entries.async_update_entry(entry, data=data, title=data[CONF_NAME])
-                await self.hass.config_entries.async_reload(entry.entry_id)
+                if entry.state is config_entries.ConfigEntryState.LOADED:
+                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
             return self.async_abort(reason="already_configured")
 
         return self.async_create_entry(title=data[CONF_NAME], data=data)
