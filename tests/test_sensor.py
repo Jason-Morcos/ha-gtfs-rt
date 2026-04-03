@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import types
 import unittest
+import datetime as dt
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,7 @@ sys.modules[sensor_spec.name] = sensor_module
 sensor_spec.loader.exec_module(sensor_module)
 
 PublicTransportData = sensor_module.PublicTransportData
+StopDetails = realtime_module.StopDetails
 
 
 class SensorUpdateTests(unittest.TestCase):
@@ -144,6 +146,67 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(calls, ["fallback"])
         self.assertIsNone(data.last_trip_update_error)
         self.assertEqual(data.info, {"100214": {"1234": ["departure"]}})
+
+    def test_rate_limited_stop_arrivals_reuse_cached_data(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("100214", "1234")],
+            static_schedule_url=None,
+            stop_arrivals_url_template="https://example.com/{stop_id}",
+        )
+        future_departure = StopDetails(now + dt.timedelta(minutes=4), None, None, None)
+        past_departure = StopDetails(now - dt.timedelta(minutes=1), None, None, None)
+        data._last_stop_arrival_info = {"100214": {"1234": [past_departure, future_departure]}}
+        fallback_calls = []
+
+        class FakeResponse:
+            status_code = 429
+            headers = {"Retry-After": "120"}
+
+            def raise_for_status(self):
+                raise AssertionError("raise_for_status should not be called for 429 handling")
+
+        sensor_module.requests.get = lambda *args, **kwargs: FakeResponse()
+        data._update_route_statuses = lambda *_args: fallback_calls.append("fallback")
+
+        data.update()
+
+        self.assertEqual(fallback_calls, [])
+        self.assertEqual(data.info, {"100214": {"1234": [future_departure]}})
+        self.assertIsNone(data.last_trip_update_error)
+        self.assertEqual(data._stop_arrivals_backoff_until, now + dt.timedelta(seconds=120))
+
+    def test_rate_limit_backoff_skips_network_requests(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("100214", "1234")],
+            static_schedule_url=None,
+            stop_arrivals_url_template="https://example.com/{stop_id}",
+        )
+        future_departure = StopDetails(now + dt.timedelta(minutes=3), None, None, None)
+        data._last_stop_arrival_info = {"100214": {"1234": [future_departure]}}
+        data._stop_arrivals_backoff_until = now + dt.timedelta(minutes=2)
+        fallback_calls = []
+
+        def unexpected_get(*_args, **_kwargs):
+            raise AssertionError("requests.get should not run during stop-arrivals backoff")
+
+        sensor_module.requests.get = unexpected_get
+        data._update_route_statuses = lambda *_args: fallback_calls.append("fallback")
+
+        data.update()
+
+        self.assertEqual(fallback_calls, [])
+        self.assertEqual(data.info, {"100214": {"1234": [future_departure]}})
+        self.assertIsNone(data.last_trip_update_error)
 
 
 if __name__ == "__main__":

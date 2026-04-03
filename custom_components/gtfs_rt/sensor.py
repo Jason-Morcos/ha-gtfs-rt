@@ -54,6 +54,7 @@ ATTR_NEXT_SCHEDULED_DEPARTURE = "Next scheduled departure"
 ATTR_PROBLEM_REASON = "Problem reason"
 
 MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=60)
+DEFAULT_STOP_ARRIVALS_BACKOFF = datetime.timedelta(minutes=5)
 
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(FEED_CONFIG_SCHEMA)
@@ -277,6 +278,8 @@ class PublicTransportData:
         self.info = {}
         self.last_trip_update_error = None
         self._schedule_status = {}
+        self._last_stop_arrival_info = {}
+        self._stop_arrivals_backoff_until = None
 
     def get_schedule_status(self, route_id, stop_id):
         return self._schedule_status.get((route_id, stop_id))
@@ -319,6 +322,17 @@ class PublicTransportData:
 
     def _update_stop_arrival_statuses(self):
         now = dt_util.now().replace(tzinfo=None)
+        cached_departures = self._future_departure_times(self._last_stop_arrival_info, now)
+
+        if self._stop_arrivals_backoff_until and now < self._stop_arrivals_backoff_until:
+            self.info = cached_departures
+            if cached_departures:
+                return None
+            return (
+                "Stop-level arrivals temporarily rate limited until "
+                f"{self._stop_arrivals_backoff_until.strftime(TIME_STR_FORMAT)}"
+            )
+
         departure_times = {}
 
         for route_id, stop_id in self._monitored_departures:
@@ -327,6 +341,20 @@ class PublicTransportData:
             try:
                 url = self._stop_arrivals_url_template.format(stop_id=stop_id)
                 response = requests.get(url, headers=self._headers, timeout=REQUEST_TIMEOUT)
+                if response.status_code == 429:
+                    retry_after = self._get_stop_arrivals_retry_after(response)
+                    self._stop_arrivals_backoff_until = now + retry_after
+                    self.info = cached_departures
+                    _LOGGER.warning(
+                        "Stop-level arrivals rate limited; backing off until %s",
+                        self._stop_arrivals_backoff_until.strftime(TIME_STR_FORMAT),
+                    )
+                    if cached_departures:
+                        return None
+                    return (
+                        "Stop-level arrivals temporarily rate limited until "
+                        f"{self._stop_arrivals_backoff_until.strftime(TIME_STR_FORMAT)}"
+                    )
                 response.raise_for_status()
                 payload = response.json()
             except Exception as err:
@@ -344,7 +372,32 @@ class PublicTransportData:
             departure_times[route_id][stop_id] = filter_onebusaway_arrivals(arrivals, route_id, now)
 
         self.info = departure_times
+        self._last_stop_arrival_info = departure_times
+        self._stop_arrivals_backoff_until = None
         return None
+
+    @staticmethod
+    def _future_departure_times(departure_times, now):
+        future_departures = {}
+        for route_id, stops in (departure_times or {}).items():
+            future_departures[route_id] = {}
+            for stop_id, details in stops.items():
+                future_departures[route_id][stop_id] = [
+                    detail for detail in details if detail.arrival_time > now
+                ]
+        return future_departures
+
+    @staticmethod
+    def _get_stop_arrivals_retry_after(response):
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                seconds = int(retry_after)
+            except ValueError:
+                seconds = None
+            if seconds is not None and seconds > 0:
+                return datetime.timedelta(seconds=seconds)
+        return DEFAULT_STOP_ARRIVALS_BACKOFF
 
     def _update_route_statuses(self, vehicle_positions, vehicles_trips, vehicle_occupancy):
         from google.transit import gtfs_realtime_pb2
