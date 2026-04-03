@@ -19,6 +19,7 @@ from .const import (
     CONF_ROUTE,
     CONF_STATIC_SCHEDULE_URL,
     CONF_STOP_ID,
+    CONF_STOP_ARRIVALS_URL_TEMPLATE,
     CONF_TRIP_UPDATE_URL,
     CONF_VEHICLE_POSITION_URL,
     CONF_X_API_KEY,
@@ -43,6 +44,7 @@ FEED_CONFIG_SCHEMA = {
     vol.Exclusive(CONF_HEADERS, "headers"): {cv.string: cv.string},
     vol.Optional(CONF_VEHICLE_POSITION_URL): cv.string,
     vol.Optional(CONF_STATIC_SCHEDULE_URL): cv.string,
+    vol.Optional(CONF_STOP_ARRIVALS_URL_TEMPLATE): cv.string,
     vol.Required(CONF_DEPARTURES): [DEPARTURE_SCHEMA],
 }
 
@@ -68,6 +70,7 @@ def derive_feed_id(config: dict) -> str:
         CONF_TRIP_UPDATE_URL: config.get(CONF_TRIP_UPDATE_URL),
         CONF_VEHICLE_POSITION_URL: config.get(CONF_VEHICLE_POSITION_URL),
         CONF_STATIC_SCHEDULE_URL: config.get(CONF_STATIC_SCHEDULE_URL),
+        CONF_STOP_ARRIVALS_URL_TEMPLATE: config.get(CONF_STOP_ARRIVALS_URL_TEMPLATE),
         CONF_HEADERS: config.get(CONF_HEADERS, {}),
     }
     digest = hashlib.sha1(
@@ -130,6 +133,8 @@ def normalize_feed_config(config: dict) -> dict:
         normalized[CONF_VEHICLE_POSITION_URL] = vehicle_position_url
     if static_schedule_url := config.get(CONF_STATIC_SCHEDULE_URL):
         normalized[CONF_STATIC_SCHEDULE_URL] = static_schedule_url
+    if stop_arrivals_url_template := config.get(CONF_STOP_ARRIVALS_URL_TEMPLATE):
+        normalized[CONF_STOP_ARRIVALS_URL_TEMPLATE] = stop_arrivals_url_template
     if entity_namespace := config.get(CONF_ENTITY_NAMESPACE):
         normalized[CONF_ENTITY_NAMESPACE] = entity_namespace
     return normalized

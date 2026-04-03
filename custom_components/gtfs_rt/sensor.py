@@ -23,6 +23,7 @@ from .const import (
     CONF_ROUTE,
     CONF_STATIC_SCHEDULE_URL,
     CONF_STOP_ID,
+    CONF_STOP_ARRIVALS_URL_TEMPLATE,
     CONF_TRIP_UPDATE_URL,
     CONF_VEHICLE_POSITION_URL,
     DEFAULT_NAME,
@@ -32,6 +33,7 @@ from .const import (
     TIME_STR_FORMAT,
 )
 from .health import STATUS_LOOKUP_FAILED, STATUS_SERVICE_EXPECTED, StaticScheduleValidator
+from .realtime import StopDetails, filter_onebusaway_arrivals
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -86,6 +88,7 @@ def _build_shared_data(config):
         config.get(CONF_HEADERS, {}),
         monitored_departures,
         config.get(CONF_STATIC_SCHEDULE_URL),
+        config.get(CONF_STOP_ARRIVALS_URL_TEMPLATE),
     )
 
 
@@ -259,11 +262,13 @@ class PublicTransportData:
         headers=None,
         monitored_departures=None,
         static_schedule_url=None,
+        stop_arrivals_url_template=None,
     ):
         self._trip_update_url = trip_update_url
         self._vehicle_position_url = vehicle_position_url
         self._headers = headers or {}
         self._monitored_departures = monitored_departures or []
+        self._stop_arrivals_url_template = stop_arrivals_url_template
         self._schedule_validator = (
             StaticScheduleValidator(static_schedule_url, self._monitored_departures, self._headers)
             if static_schedule_url
@@ -286,10 +291,13 @@ class PublicTransportData:
         self.last_trip_update_error = None
         self.info = {}
 
-        positions, vehicles_trips, occupancy = (
-            self._get_vehicle_positions() if self._vehicle_position_url else ({}, {}, {})
-        )
-        self._update_route_statuses(positions, vehicles_trips, occupancy)
+        if self._stop_arrivals_url_template:
+            self._update_stop_arrival_statuses()
+        else:
+            positions, vehicles_trips, occupancy = (
+                self._get_vehicle_positions() if self._vehicle_position_url else ({}, {}, {})
+            )
+            self._update_route_statuses(positions, vehicles_trips, occupancy)
 
         if self._schedule_validator:
             now = dt_util.now()
@@ -300,15 +308,36 @@ class PublicTransportData:
         else:
             self._schedule_status = {}
 
+    def _update_stop_arrival_statuses(self):
+        now = dt_util.now().replace(tzinfo=None)
+        departure_times = {}
+
+        for route_id, stop_id in self._monitored_departures:
+            departure_times.setdefault(route_id, {})
+            departure_times[route_id][stop_id] = []
+            try:
+                url = self._stop_arrivals_url_template.format(stop_id=stop_id)
+                response = requests.get(url, headers=self._headers, timeout=REQUEST_TIMEOUT)
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as err:
+                self.last_trip_update_error = f"Stop-level arrivals unavailable: {err}"
+                _LOGGER.error("Unable to refresh stop-level arrivals: %s", err)
+                return
+
+            if payload.get("code") not in (None, 200):
+                self.last_trip_update_error = f"Stop-level arrivals unavailable: API code {payload.get('code')}"
+                _LOGGER.error("Unexpected stop-level arrivals payload code: %s", payload.get("code"))
+                return
+
+            entry = (payload.get("data") or {}).get("entry") or {}
+            arrivals = entry.get("arrivalsAndDepartures") or []
+            departure_times[route_id][stop_id] = filter_onebusaway_arrivals(arrivals, route_id, now)
+
+        self.info = departure_times
+
     def _update_route_statuses(self, vehicle_positions, vehicles_trips, vehicle_occupancy):
         from google.transit import gtfs_realtime_pb2
-
-        class StopDetails:
-            def __init__(self, arrival_time, position, occupancy, delay):
-                self.arrival_time = arrival_time
-                self.position = position
-                self.occupancy = occupancy
-                self.delay = delay
 
         feed = gtfs_realtime_pb2.FeedMessage()
         try:
