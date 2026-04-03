@@ -39,6 +39,7 @@ sensor:
 - platform: gtfs_rt
   trip_update_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/trip-updates-for-agency/1.pb?key=TEST'
   vehicle_position_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/vehicle-positions-for-agency/1.pb?key=TEST'
+  static_schedule_url: 'https://metro.kingcounty.gov/gtfs/google_transit.zip'
   departures:
   - name: "48 to Uni"
     unique_id: 8af3e2dd-9f0a-4b84-8ec0-109c9d2a7c4f
@@ -90,11 +91,20 @@ Configuration variables:
 
 - **trip_update_url** (*Required*): Provides bus route etas. See the **Finding Feeds** section at the bottom of the page for more details on how to find these
 - **vehicle_position_url** (*Optional*): Provides live bus position tracking on the home assistant map
+- **static_schedule_url** (*Optional*): A static GTFS ZIP feed used to validate whether a stop is valid and whether service should currently exist. When configured, the entity stays `unknown` during normal no-service windows, but becomes `unavailable` when the route/stop is invalid or scheduled service should exist and the realtime feed has no matching departures.
 - **headers**(*Optional*): Expects a dictionary. If provided, the dictionary will be sent as headers. (e.g. {"Authorization": "mykey"})
 - **departures** (*Required*): A list of routes and departure locations to watch
 - **unique_id** (*Optional*): A UUID for the entity to allow entity registry entries
 - **route** (*Optional*): The name of the gtfs route
 - **stopid** (*Optional*): The stopid for the location you want etas for
+
+When `static_schedule_url` is configured, each sensor also adds:
+
+- `Service status`
+- `Service today`
+- `Service expected now`
+- `Next scheduled departure`
+- `Problem reason`
 
 ## Screenshot
 
