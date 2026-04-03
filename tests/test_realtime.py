@@ -19,8 +19,9 @@ route_id_matches = REALTIME.route_id_matches
 class RealtimeTests(unittest.TestCase):
     def test_route_id_matches_agency_prefixed_ids(self):
         self.assertTrue(route_id_matches("100214", "1_100214"))
-        self.assertTrue(route_id_matches("1_100214", "100214"))
         self.assertTrue(route_id_matches("1_100214", "1_100214"))
+        self.assertFalse(route_id_matches("1_100214", "100214"))
+        self.assertFalse(route_id_matches("1_100214", "2_100214"))
         self.assertFalse(route_id_matches("100214", "1_100341"))
 
     def test_filter_onebusaway_arrivals_uses_future_scheduled_or_predicted_times(self):

@@ -326,7 +326,7 @@ class PublicTransportData:
 
         if self._stop_arrivals_backoff_until and now < self._stop_arrivals_backoff_until:
             self.info = cached_departures
-            if cached_departures:
+            if self._has_departures(cached_departures):
                 return None
             return (
                 "Stop-level arrivals temporarily rate limited until "
@@ -349,7 +349,7 @@ class PublicTransportData:
                         "Stop-level arrivals rate limited; backing off until %s",
                         self._stop_arrivals_backoff_until.strftime(TIME_STR_FORMAT),
                     )
-                    if cached_departures:
+                    if self._has_departures(cached_departures):
                         return None
                     return (
                         "Stop-level arrivals temporarily rate limited until "
@@ -386,6 +386,14 @@ class PublicTransportData:
                     detail for detail in details if detail.arrival_time > now
                 ]
         return future_departures
+
+    @staticmethod
+    def _has_departures(departure_times):
+        return any(
+            details
+            for stops in (departure_times or {}).values()
+            for details in stops.values()
+        )
 
     @staticmethod
     def _get_stop_arrivals_retry_after(response):
