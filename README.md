@@ -5,7 +5,7 @@ local transit systems that provide gtfs feeds.
 
 ## Installation (HACS) - Recommended
 0. Have [HACS](https://custom-components.github.io/hacs/installation/manual/) installed, this will allow you to easily update
-1. Add `https://github.com/zacs/ha-gtfs-rt` as a [custom repository](https://custom-components.github.io/hacs/usage/settings/#add-custom-repositories) as Type: Integration
+1. Add `https://github.com/Jason-Morcos/ha-gtfs-rt` as a [custom repository](https://custom-components.github.io/hacs/usage/settings/#add-custom-repositories) as Type: Integration
 2. Click install under "GTFS-Realtime", restart your instance.
 
 ## Installation (Manual)
@@ -22,29 +22,33 @@ Add the following to your `configuration.yaml` file:
 ```yaml
 # Example entry for Austin TX
 
-sensor:
-  - platform: gtfs_rt
+gtfs_rt:
+  - name: Austin Metro
+    entity_namespace: gtfs_austin
     trip_update_url: 'https://data.texas.gov/download/rmk2-acnw/application%2foctet-stream'
     vehicle_position_url: 'https://data.texas.gov/download/eiei-9rpf/application%2Foctet-stream'
+    static_schedule_url: 'https://example.com/google_transit.zip'
     departures:
-    - name: Downtown to airport
-      unique_id: 3f2f8b2e-8ed2-4d7c-b2a6-9a8f0911b7a9
-      route: 100
-      stopid: 514
+      - name: Downtown to airport
+        unique_id: 3f2f8b2e-8ed2-4d7c-b2a6-9a8f0911b7a9
+        route: 100
+        stopid: 514
 ```
 
 ```yaml
 # Example entry for Seattle WA
 
-- platform: gtfs_rt
-  trip_update_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/trip-updates-for-agency/1.pb?key=TEST'
-  vehicle_position_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/vehicle-positions-for-agency/1.pb?key=TEST'
-  static_schedule_url: 'https://metro.kingcounty.gov/gtfs/google_transit.zip'
-  departures:
-  - name: "48 to Uni"
-    unique_id: 8af3e2dd-9f0a-4b84-8ec0-109c9d2a7c4f
-    route: 100228
-    stopid: 36800
+gtfs_rt:
+  - name: King County Metro
+    entity_namespace: gtfs_kingcountymetro
+    trip_update_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/trip-updates-for-agency/1.pb?key=TEST'
+    vehicle_position_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/vehicle-positions-for-agency/1.pb?key=TEST'
+    static_schedule_url: 'https://metro.kingcounty.gov/gtfs/google_transit.zip'
+    departures:
+      - name: "48 to Uni"
+        unique_id: 8af3e2dd-9f0a-4b84-8ec0-109c9d2a7c4f
+        route: 100228
+        stopid: 36800
 ```
 
 ```yaml
@@ -89,6 +93,8 @@ sensor:
 
 Configuration variables:
 
+- **name** (*Optional*): Friendly title for the GTFS feed. Used for the config-entry title and as a prefix for route devices.
+- **entity_namespace** (*Optional*): Stable namespace used as the feed identifier during YAML import. Reusing the same value lets existing entities keep their entity IDs after migration.
 - **trip_update_url** (*Required*): Provides bus route etas. See the **Finding Feeds** section at the bottom of the page for more details on how to find these
 - **vehicle_position_url** (*Optional*): Provides live bus position tracking on the home assistant map
 - **static_schedule_url** (*Optional*): A static GTFS ZIP feed used to validate whether a stop is valid and whether service should currently exist. When configured, the entity stays `unknown` during normal no-service windows, but becomes `unavailable` when the route/stop is invalid or scheduled service should exist and the realtime feed has no matching departures.
@@ -105,6 +111,10 @@ When `static_schedule_url` is configured, each sensor also adds:
 - `Service expected now`
 - `Next scheduled departure`
 - `Problem reason`
+
+When the feed is configured under the top-level `gtfs_rt:` key, the integration imports it into a Home Assistant config entry. That allows each route to appear as its own service device, so a line like `372` can group all of your chosen stops under a single device.
+
+The legacy `sensor: - platform: gtfs_rt` format still works, but it will not create route devices and is now considered deprecated.
 
 ## Screenshot
 

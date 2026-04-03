@@ -1,17 +1,35 @@
+from __future__ import annotations
+
 import datetime
 import logging
 import time
 from enum import Enum
 
 import requests
-import voluptuous as vol
 
-import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
 from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
 from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE, CONF_NAME, CONF_UNIQUE_ID, UnitOfTime
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.util import Throttle
 
+from .config import FEED_CONFIG_SCHEMA, normalize_feed_config
+from .const import (
+    CONF_DEPARTURES,
+    CONF_FEED_ID,
+    CONF_HEADERS,
+    CONF_ROUTE,
+    CONF_STATIC_SCHEDULE_URL,
+    CONF_STOP_ID,
+    CONF_TRIP_UPDATE_URL,
+    CONF_VEHICLE_POSITION_URL,
+    DEFAULT_NAME,
+    DOMAIN,
+    ICON,
+    REQUEST_TIMEOUT,
+    TIME_STR_FORMAT,
+)
 from .health import STATUS_LOOKUP_FAILED, STATUS_SERVICE_EXPECTED, StaticScheduleValidator
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,44 +50,10 @@ ATTR_SERVICE_EXPECTED_NOW = "Service expected now"
 ATTR_NEXT_SCHEDULED_DEPARTURE = "Next scheduled departure"
 ATTR_PROBLEM_REASON = "Problem reason"
 
-CONF_API_KEY = "api_key"
-CONF_APIKEY = "apikey"
-CONF_X_API_KEY = "x_api_key"
-CONF_HEADERS = "headers"
-CONF_STOP_ID = "stopid"
-CONF_ROUTE = "route"
-CONF_DEPARTURES = "departures"
-CONF_TRIP_UPDATE_URL = "trip_update_url"
-CONF_VEHICLE_POSITION_URL = "vehicle_position_url"
-CONF_STATIC_SCHEDULE_URL = "static_schedule_url"
-
-DEFAULT_NAME = "Next Bus"
-ICON = "mdi:bus"
-REQUEST_TIMEOUT = 30
-
 MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=60)
-TIME_STR_FORMAT = "%H:%M"
 
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_TRIP_UPDATE_URL): cv.string,
-        vol.Exclusive(CONF_API_KEY, "headers"): cv.string,
-        vol.Exclusive(CONF_X_API_KEY, "headers"): cv.string,
-        vol.Exclusive(CONF_APIKEY, "headers"): cv.string,
-        vol.Exclusive(CONF_HEADERS, "headers"): {cv.string: cv.string},
-        vol.Optional(CONF_VEHICLE_POSITION_URL): cv.string,
-        vol.Optional(CONF_STATIC_SCHEDULE_URL): cv.string,
-        vol.Optional(CONF_DEPARTURES): [
-            {
-                vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-                vol.Optional(CONF_UNIQUE_ID): cv.string,
-                vol.Required(CONF_STOP_ID): cv.string,
-                vol.Required(CONF_ROUTE): cv.string,
-            }
-        ],
-    }
-)
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(FEED_CONFIG_SCHEMA)
 
 
 class OccupancyStatus(Enum):
@@ -90,49 +74,76 @@ def due_in_minutes(timestamp):
     return int(diff.total_seconds() / 60)
 
 
-def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Set up the legacy YAML sensor platform."""
-    headers = dict(config.get(CONF_HEADERS, {}))
-    if (api_key := config.get(CONF_API_KEY)) is not None:
-        headers["Authorization"] = api_key
-    elif (apikey := config.get(CONF_APIKEY)) is not None:
-        headers["apikey"] = apikey
-    elif (x_api_key := config.get(CONF_X_API_KEY)) is not None:
-        headers["x-api-key"] = x_api_key
-
+def _build_shared_data(config):
     monitored_departures = [
-        (departure.get(CONF_ROUTE), departure.get(CONF_STOP_ID))
-        for departure in config.get(CONF_DEPARTURES)
+        (departure[CONF_ROUTE], departure[CONF_STOP_ID])
+        for departure in config[CONF_DEPARTURES]
     ]
-    data = PublicTransportData(
-        config.get(CONF_TRIP_UPDATE_URL),
+    return PublicTransportData(
+        config[CONF_TRIP_UPDATE_URL],
         config.get(CONF_VEHICLE_POSITION_URL),
-        headers,
+        config.get(CONF_HEADERS, {}),
         monitored_departures,
         config.get(CONF_STATIC_SCHEDULE_URL),
     )
-    sensors = []
-    for departure in config.get(CONF_DEPARTURES):
-        sensors.append(
-            PublicTransportSensor(
-                data,
-                departure.get(CONF_STOP_ID),
-                departure.get(CONF_ROUTE),
-                departure.get(CONF_NAME),
-                departure.get(CONF_UNIQUE_ID),
-            )
-        )
 
-    add_devices(sensors, True)
+
+def _build_sensors(data, config, config_entry=None):
+    return [
+        PublicTransportSensor(
+            data=data,
+            stop=departure[CONF_STOP_ID],
+            route=departure[CONF_ROUTE],
+            name=departure.get(CONF_NAME, DEFAULT_NAME),
+            unique_id=departure.get(CONF_UNIQUE_ID),
+            feed_id=config.get(CONF_FEED_ID),
+            feed_name=config.get(CONF_NAME),
+            config_entry_id=config_entry.entry_id if config_entry else None,
+        )
+        for departure in config[CONF_DEPARTURES]
+    ]
+
+
+def setup_platform(hass, config, add_devices, discovery_info=None):
+    """Set up the legacy YAML sensor platform."""
+    normalized = normalize_feed_config(dict(config))
+    already_imported = any(
+        entry.data.get(CONF_FEED_ID) == normalized[CONF_FEED_ID]
+        for entry in hass.config_entries.async_entries(DOMAIN)
+    )
+    if already_imported:
+        _LOGGER.debug(
+            "Skipping legacy platform setup for %s because a config entry already exists",
+            normalized.get(CONF_NAME, DEFAULT_NAME),
+        )
+        return
+
+    _LOGGER.warning(
+        "Legacy sensor platform configuration for gtfs_rt is deprecated. "
+        "Move the feed under the top-level gtfs_rt section to enable route devices."
+    )
+    data = _build_shared_data(normalized)
+    add_devices(_build_sensors(data, normalized), True)
+
+
+async def async_setup_entry(hass, config_entry, async_add_entities):
+    """Set up GTFS-Realtime sensors from a config entry."""
+    config = dict(config_entry.data)
+    data = _build_shared_data(config)
+    hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = data
+    async_add_entities(_build_sensors(data, config, config_entry), True)
 
 
 class PublicTransportSensor(SensorEntity):
     """Implementation of a public transport sensor."""
 
-    def __init__(self, data, stop, route, name, unique_id):
+    def __init__(self, data, stop, route, name, unique_id, feed_id=None, feed_name=None, config_entry_id=None):
         self.data = data
         self._stop = stop
         self._route = route
+        self._feed_id = feed_id
+        self._feed_name = feed_name
+        self._config_entry_id = config_entry_id
 
         self._attr_name = name
         self._attr_icon = ICON
@@ -161,6 +172,21 @@ class PublicTransportSensor(SensorEntity):
                 )
             return "Scheduled service is expected, but the realtime feed has no matching departures"
         return None
+
+    @property
+    def device_info(self):
+        if not self._feed_id or not self._config_entry_id:
+            return None
+
+        route_label = self.data.get_route_label(self._route) or self._route
+        feed_prefix = f"{self._feed_name} " if self._feed_name else ""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._feed_id}:route:{self._route}")},
+            name=f"{feed_prefix}Route {route_label}",
+            entry_type=DeviceEntryType.SERVICE,
+            manufacturer="GTFS-Realtime",
+            model="Transit Route",
+        )
 
     @property
     def state(self):
@@ -253,6 +279,11 @@ class PublicTransportData:
 
     def get_schedule_status(self, route_id, stop_id):
         return self._schedule_status.get((route_id, stop_id))
+
+    def get_route_label(self, route_id):
+        if not self._schedule_validator:
+            return None
+        return self._schedule_validator.get_route_label(route_id)
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     def update(self):

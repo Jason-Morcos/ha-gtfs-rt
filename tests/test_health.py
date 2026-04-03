@@ -1,20 +1,27 @@
 import datetime as dt
+import importlib.util
 import io
 import sys
+import types
 import unittest
 import zipfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+HEALTH_PATH = ROOT / "custom_components" / "gtfs_rt" / "health.py"
+SPEC = importlib.util.spec_from_file_location("gtfs_rt_health", HEALTH_PATH)
+HEALTH = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+sys.modules.setdefault("requests", types.SimpleNamespace(get=None))
+sys.modules[SPEC.name] = HEALTH
+SPEC.loader.exec_module(HEALTH)
 
-from custom_components.gtfs_rt.health import (  # noqa: E402
-    STATUS_INVALID_STOP,
-    STATUS_NO_SERVICE_NOW,
-    STATUS_NO_SERVICE_TODAY,
-    STATUS_ROUTE_STOP_MISMATCH,
-    STATUS_SERVICE_EXPECTED,
-    StaticScheduleValidator,
-)
+STATUS_INVALID_STOP = HEALTH.STATUS_INVALID_STOP
+STATUS_NO_SERVICE_NOW = HEALTH.STATUS_NO_SERVICE_NOW
+STATUS_NO_SERVICE_TODAY = HEALTH.STATUS_NO_SERVICE_TODAY
+STATUS_ROUTE_STOP_MISMATCH = HEALTH.STATUS_ROUTE_STOP_MISMATCH
+STATUS_SERVICE_EXPECTED = HEALTH.STATUS_SERVICE_EXPECTED
+StaticScheduleValidator = HEALTH.StaticScheduleValidator
 
 
 def build_archive(files):
@@ -105,6 +112,12 @@ class StaticScheduleValidatorTests(unittest.TestCase):
         self.assertTrue(status.route_exists)
         self.assertTrue(status.stop_exists)
         self.assertFalse(status.route_serves_stop)
+
+    def test_route_label_comes_from_static_feed(self):
+        now = dt.datetime(2026, 4, 3, 14, 0, tzinfo=dt.timezone.utc)
+        self.validator.get_status("100214", "23895", now)
+
+        self.assertEqual(self.validator.get_route_label("100214"), "372")
 
 
 if __name__ == "__main__":
