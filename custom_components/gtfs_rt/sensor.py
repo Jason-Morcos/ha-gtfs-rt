@@ -292,7 +292,16 @@ class PublicTransportData:
         self.info = {}
 
         if self._stop_arrivals_url_template:
-            self._update_stop_arrival_statuses()
+            stop_arrivals_error = self._update_stop_arrival_statuses()
+            if stop_arrivals_error:
+                _LOGGER.warning("Falling back to trip updates after stop-level arrivals failure")
+                self.last_trip_update_error = None
+                positions, vehicles_trips, occupancy = (
+                    self._get_vehicle_positions() if self._vehicle_position_url else ({}, {}, {})
+                )
+                self._update_route_statuses(positions, vehicles_trips, occupancy)
+                if self.last_trip_update_error:
+                    self.last_trip_update_error = f"{stop_arrivals_error}; {self.last_trip_update_error}"
         else:
             positions, vehicles_trips, occupancy = (
                 self._get_vehicle_positions() if self._vehicle_position_url else ({}, {}, {})
@@ -323,18 +332,19 @@ class PublicTransportData:
             except Exception as err:
                 self.last_trip_update_error = f"Stop-level arrivals unavailable: {err}"
                 _LOGGER.error("Unable to refresh stop-level arrivals: %s", err)
-                return
+                return self.last_trip_update_error
 
             if payload.get("code") not in (None, 200):
                 self.last_trip_update_error = f"Stop-level arrivals unavailable: API code {payload.get('code')}"
                 _LOGGER.error("Unexpected stop-level arrivals payload code: %s", payload.get("code"))
-                return
+                return self.last_trip_update_error
 
             entry = (payload.get("data") or {}).get("entry") or {}
             arrivals = entry.get("arrivalsAndDepartures") or []
             departure_times[route_id][stop_id] = filter_onebusaway_arrivals(arrivals, route_id, now)
 
         self.info = departure_times
+        return None
 
     def _update_route_statuses(self, vehicle_positions, vehicles_trips, vehicle_occupancy):
         from google.transit import gtfs_realtime_pb2

@@ -31,10 +31,11 @@ def normalize_prefixed_id(value: str | None) -> str | None:
 
 def route_id_matches(configured_route: str, observed_route: str | None) -> bool:
     """Match a configured route id against a provider route id."""
+    configured = normalize_prefixed_id(configured_route)
     observed = normalize_prefixed_id(observed_route)
-    if observed is None:
+    if configured is None or observed is None:
         return False
-    return str(configured_route) == observed
+    return configured == observed
 
 
 def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
