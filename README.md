@@ -114,6 +114,14 @@ When `static_schedule_url` is configured, each sensor also adds:
 - `Next scheduled departure`
 - `Problem reason`
 
+Each sensor also exposes `Upcoming departures`, a list of up to five upcoming trips with:
+
+- `due_at`
+- `due_in`
+- `delay_minutes`
+- `occupancy`
+- `latitude` / `longitude` when live vehicle position data is available
+
 When the feed is configured under the top-level `gtfs_rt:` key, the integration imports it into a Home Assistant config entry. That allows each route to appear as its own service device, so a line like `372` can group all of your chosen stops under a single device.
 
 If both `trip_update_url` and `stop_arrivals_url_template` are configured, the stop-level arrivals endpoint is used as the primary realtime source and the trip-update feed remains available as a compatibility fallback in the configuration.

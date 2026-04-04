@@ -115,10 +115,71 @@ sys.modules[sensor_spec.name] = sensor_module
 sensor_spec.loader.exec_module(sensor_module)
 
 PublicTransportData = sensor_module.PublicTransportData
+PublicTransportSensor = sensor_module.PublicTransportSensor
 StopDetails = realtime_module.StopDetails
+RealtimePosition = realtime_module.RealtimePosition
 
 
 class SensorUpdateTests(unittest.TestCase):
+    def test_sensor_exposes_upcoming_departures_attribute(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        next_buses = [
+            StopDetails(
+                now + dt.timedelta(minutes=2),
+                RealtimePosition(47.1, -122.1),
+                "FEW_SEATS_AVAILABLE",
+                120,
+            ),
+            StopDetails(now + dt.timedelta(minutes=9), None, "STANDING_ROOM_ONLY", 300),
+            StopDetails(now + dt.timedelta(minutes=17), None, None, None),
+            StopDetails(now + dt.timedelta(minutes=24), None, None, None),
+            StopDetails(now + dt.timedelta(minutes=31), None, None, None),
+            StopDetails(now + dt.timedelta(minutes=38), None, None, None),
+        ]
+
+        class FakeData:
+            def __init__(self):
+                self.info = {"100214": {"1234": next_buses}}
+                self.last_trip_update_error = None
+
+            def get_schedule_status(self, _route, _stop):
+                return None
+
+        sensor = PublicTransportSensor(
+            data=FakeData(),
+            stop="1234",
+            route="100214",
+            name="Route 372",
+            unique_id="test-unique-id",
+        )
+
+        attrs = sensor.extra_state_attributes
+
+        self.assertEqual(sensor.state, 2)
+        self.assertEqual(attrs[sensor_module.ATTR_NEXT_UP], "16:09")
+        self.assertEqual(len(attrs[sensor_module.ATTR_UPCOMING_DEPARTURES]), 5)
+        self.assertEqual(
+            attrs[sensor_module.ATTR_UPCOMING_DEPARTURES][0],
+            {
+                "due_at": "16:02",
+                "due_in": 2,
+                "delay_minutes": 2.0,
+                "occupancy": "FEW_SEATS_AVAILABLE",
+                "latitude": 47.1,
+                "longitude": -122.1,
+            },
+        )
+        self.assertEqual(
+            attrs[sensor_module.ATTR_UPCOMING_DEPARTURES][1],
+            {
+                "due_at": "16:09",
+                "due_in": 9,
+                "delay_minutes": 5.0,
+                "occupancy": "STANDING_ROOM_ONLY",
+            },
+        )
+
     def test_stop_arrivals_failure_falls_back_to_trip_updates(self):
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
