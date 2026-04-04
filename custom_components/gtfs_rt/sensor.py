@@ -47,6 +47,7 @@ ATTR_NEXT_UP = "Next bus"
 ATTR_NEXT_UP_DUE_IN = "Next bus due in"
 ATTR_NEXT_DELAYED_BY = "Next bus delayed by"
 ATTR_NEXT_OCCUPANCY = "Next bus occupancy"
+ATTR_UPCOMING_DEPARTURES = "Upcoming departures"
 ATTR_SERVICE_STATUS = "Service status"
 ATTR_SERVICE_TODAY = "Service today"
 ATTR_SERVICE_EXPECTED_NOW = "Service expected now"
@@ -55,6 +56,7 @@ ATTR_PROBLEM_REASON = "Problem reason"
 
 MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=60)
 DEFAULT_STOP_ARRIVALS_BACKOFF = datetime.timedelta(minutes=5)
+MAX_UPCOMING_DEPARTURES = 5
 
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(FEED_CONFIG_SCHEMA)
@@ -76,6 +78,20 @@ def due_in_minutes(timestamp):
     """Get the remaining minutes from now until a given datetime object."""
     diff = timestamp - dt_util.now().replace(tzinfo=None)
     return int(diff.total_seconds() / 60)
+
+
+def departure_attributes(detail):
+    """Serialize a realtime departure into state attributes."""
+    attrs = {
+        "due_at": detail.arrival_time.strftime(TIME_STR_FORMAT),
+        "due_in": due_in_minutes(detail.arrival_time),
+        "delay_minutes": detail.delay / 60.0 if detail.delay else None,
+        "occupancy": detail.occupancy,
+    }
+    if detail.position:
+        attrs["latitude"] = detail.position.latitude
+        attrs["longitude"] = detail.position.longitude
+    return attrs
 
 
 def _build_shared_data(config):
@@ -223,6 +239,7 @@ class PublicTransportSensor(SensorEntity):
             ATTR_NEXT_UP: None,
             ATTR_NEXT_DELAYED_BY: None,
             ATTR_NEXT_OCCUPANCY: None,
+            ATTR_UPCOMING_DEPARTURES: [],
             ATTR_STOP_ID: self._stop,
             ATTR_ROUTE: self._route,
             ATTR_SERVICE_STATUS: schedule_status.status if schedule_status else None,
@@ -247,6 +264,10 @@ class PublicTransportSensor(SensorEntity):
             attrs[ATTR_NEXT_UP_DUE_IN] = due_in_minutes(next_buses[1].arrival_time)
             attrs[ATTR_NEXT_OCCUPANCY] = next_buses[1].occupancy
             attrs[ATTR_NEXT_DELAYED_BY] = next_buses[1].delay / 60.0 if next_buses[1].delay else None
+        if next_buses:
+            attrs[ATTR_UPCOMING_DEPARTURES] = [
+                departure_attributes(detail) for detail in next_buses[:MAX_UPCOMING_DEPARTURES]
+            ]
         return attrs
 
     def update(self):
