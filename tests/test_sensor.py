@@ -301,5 +301,49 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertIsNone(data.last_trip_update_error)
 
 
+class SensorStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_setup_entry_does_not_force_update_before_add(self):
+        hass = types.SimpleNamespace(data={})
+        entry = types.SimpleNamespace(
+            entry_id="entry-1",
+            data={
+                const_module.CONF_TRIP_UPDATE_URL: "https://example.com/tripupdates.pb",
+                const_module.CONF_DEPARTURES: [
+                    {
+                        const_module.CONF_ROUTE: "100214",
+                        const_module.CONF_STOP_ID: "1234",
+                        const_mod.CONF_NAME: "Route 372",
+                        const_mod.CONF_UNIQUE_ID: "test-unique-id",
+                    }
+                ],
+            },
+        )
+        recorded = {}
+
+        def async_add_entities(entities, update_before_add=False):
+            recorded["entities"] = list(entities)
+            recorded["update_before_add"] = update_before_add
+
+        await sensor_module.async_setup_entry(hass, entry, async_add_entities)
+
+        self.assertEqual(recorded["update_before_add"], False)
+        self.assertEqual(len(recorded["entities"]), 1)
+
+    async def test_sensor_schedules_initial_refresh_after_being_added(self):
+        sensor = PublicTransportSensor(
+            data=types.SimpleNamespace(info={}, last_trip_update_error=None),
+            stop="1234",
+            route="100214",
+            name="Route 372",
+            unique_id="test-unique-id",
+        )
+        calls = []
+        sensor.async_schedule_update_ha_state = lambda force_refresh=False: calls.append(force_refresh)
+
+        await sensor.async_added_to_hass()
+
+        self.assertEqual(calls, [True])
+
+
 if __name__ == "__main__":
     unittest.main()
