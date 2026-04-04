@@ -5,7 +5,7 @@
     "dependencies": [],
     "codeowners": ["@Jason-Morcos"],
     "config_flow": true,
-    "version": "1.4.3",
+    "version": "1.4.4",
     "requirements": [
         "gtfs-realtime-bindings==1.0.0"
     ]

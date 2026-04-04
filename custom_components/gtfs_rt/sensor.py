@@ -144,7 +144,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         "Move the feed under the top-level gtfs_rt section to enable route devices."
     )
     data = _build_shared_data(normalized)
-    add_devices(_build_sensors(data, normalized), True)
+    add_devices(_build_sensors(data, normalized), False)
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -152,7 +152,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     config = dict(config_entry.data)
     data = _build_shared_data(config)
     hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = data
-    async_add_entities(_build_sensors(data, config, config_entry), True)
+    async_add_entities(_build_sensors(data, config, config_entry), False)
 
 
 class PublicTransportSensor(SensorEntity):
@@ -170,6 +170,10 @@ class PublicTransportSensor(SensorEntity):
         self._attr_icon = ICON
         self._attr_unique_id = str(unique_id) if unique_id else None
         self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    async def async_added_to_hass(self):
+        """Trigger an immediate refresh after startup without blocking entity setup."""
+        self.async_schedule_update_ha_state(True)
 
     def _get_next_buses(self):
         return self.data.info.get(self._route, {}).get(self._stop, [])
