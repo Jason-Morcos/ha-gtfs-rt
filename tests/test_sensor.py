@@ -300,6 +300,188 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(data.info, {"100214": {"1234": ["departure"]}})
         self.assertIsNone(data.last_trip_update_error)
 
+    def test_stop_arrivals_dedupes_requests_for_shared_stops(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("100214", "1234"), ("100225", "1234")],
+            static_schedule_url=None,
+            stop_arrivals_url_template="https://example.com/{stop_id}",
+        )
+        request_urls = []
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "code": 200,
+                    "data": {
+                        "entry": {
+                            "arrivalsAndDepartures": [
+                                {
+                                    "routeId": "1_100214",
+                                    "predictedDepartureTime": int(
+                                        (now + dt.timedelta(minutes=5)).timestamp() * 1000
+                                    ),
+                                    "scheduledDepartureTime": int(
+                                        (now + dt.timedelta(minutes=4)).timestamp() * 1000
+                                    ),
+                                },
+                                {
+                                    "routeId": "1_100225",
+                                    "predictedDepartureTime": int(
+                                        (now + dt.timedelta(minutes=8)).timestamp() * 1000
+                                    ),
+                                    "scheduledDepartureTime": int(
+                                        (now + dt.timedelta(minutes=7)).timestamp() * 1000
+                                    ),
+                                },
+                            ]
+                        }
+                    },
+                }
+
+        def fake_get(url, **_kwargs):
+            request_urls.append(url)
+            return FakeResponse()
+
+        sensor_module.requests.get = fake_get
+
+        data.update()
+
+        self.assertEqual(request_urls, ["https://example.com/1234"])
+        self.assertEqual(len(data.info["100214"]["1234"]), 1)
+        self.assertEqual(len(data.info["100225"]["1234"]), 1)
+        self.assertEqual(data.info["100214"]["1234"][0].arrival_time, now + dt.timedelta(minutes=5))
+        self.assertEqual(data.info["100225"]["1234"][0].arrival_time, now + dt.timedelta(minutes=8))
+
+    def test_bootstrapped_stop_arrivals_refresh_one_stop_per_update(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("100214", "1234"), ("102732", "5678")],
+            static_schedule_url=None,
+            stop_arrivals_url_template="https://example.com/{stop_id}",
+        )
+        departure_a = StopDetails(now + dt.timedelta(minutes=4), None, None, None)
+        departure_b = StopDetails(now + dt.timedelta(minutes=7), None, None, None)
+        data._last_stop_arrival_info = {
+            "100214": {"1234": [departure_a]},
+            "102732": {"5678": [departure_b]},
+        }
+        data._stop_arrivals_last_refresh = {
+            "1234": now - dt.timedelta(minutes=2),
+            "5678": now - dt.timedelta(minutes=2),
+        }
+        request_urls = []
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"code": 200, "data": {"entry": {"arrivalsAndDepartures": []}}}
+
+        def fake_get(url, **_kwargs):
+            request_urls.append(url)
+            return FakeResponse()
+
+        sensor_module.requests.get = fake_get
+
+        data.update()
+        data.update()
+
+        self.assertEqual(
+            request_urls,
+            ["https://example.com/1234", "https://example.com/5678"],
+        )
+        self.assertEqual(data.info["102732"]["5678"], [])
+        self.assertEqual(data._stop_arrivals_last_refresh["1234"], now)
+        self.assertEqual(data._stop_arrivals_last_refresh["5678"], now)
+
+    def test_rate_limit_keeps_successful_partial_stop_arrivals_cache(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("100214", "1234"), ("102732", "5678")],
+            static_schedule_url=None,
+            stop_arrivals_url_template="https://example.com/{stop_id}",
+        )
+        responses = []
+
+        class SuccessResponse:
+            status_code = 200
+            headers = {}
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "code": 200,
+                    "data": {
+                        "entry": {
+                            "arrivalsAndDepartures": [
+                                {
+                                    "routeId": "1_100214",
+                                    "predictedDepartureTime": int(
+                                        (now + dt.timedelta(minutes=6)).timestamp() * 1000
+                                    ),
+                                    "scheduledDepartureTime": int(
+                                        (now + dt.timedelta(minutes=5)).timestamp() * 1000
+                                    ),
+                                }
+                            ]
+                        }
+                    },
+                }
+
+        class RateLimitedResponse:
+            status_code = 429
+            headers = {"Retry-After": "120"}
+
+            def raise_for_status(self):
+                raise AssertionError("raise_for_status should not be called for 429 handling")
+
+        def fake_get(url, **_kwargs):
+            responses.append(url)
+            if url.endswith("/1234"):
+                return SuccessResponse()
+            return RateLimitedResponse()
+
+        sensor_module.requests.get = fake_get
+
+        result = data._update_stop_arrival_statuses()
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            responses,
+            ["https://example.com/1234", "https://example.com/5678"],
+        )
+        self.assertEqual(
+            data.info["100214"]["1234"][0].arrival_time,
+            now + dt.timedelta(minutes=6),
+        )
+        self.assertEqual(data.info["102732"]["5678"], [])
+        self.assertEqual(data._stop_arrivals_backoff_until, now + dt.timedelta(seconds=120))
+
 
 class SensorStartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_setup_entry_does_not_force_update_before_add(self):
