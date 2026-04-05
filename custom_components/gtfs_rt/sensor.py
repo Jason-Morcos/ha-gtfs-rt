@@ -304,6 +304,14 @@ class PublicTransportData:
         self.last_trip_update_error = None
         self._schedule_status = {}
         self._last_stop_arrival_info = {}
+        self._stop_arrivals_routes_by_stop = {}
+        for route_id, stop_id in self._monitored_departures:
+            routes = self._stop_arrivals_routes_by_stop.setdefault(stop_id, [])
+            if route_id not in routes:
+                routes.append(route_id)
+        self._stop_arrivals_stop_ids = list(self._stop_arrivals_routes_by_stop)
+        self._stop_arrivals_last_refresh = {}
+        self._stop_arrivals_refresh_cursor = 0
         self._stop_arrivals_backoff_until = None
 
     def get_schedule_status(self, route_id, stop_id):
@@ -347,7 +355,11 @@ class PublicTransportData:
 
     def _update_stop_arrival_statuses(self):
         now = dt_util.now().replace(tzinfo=None)
-        cached_departures = self._future_departure_times(self._last_stop_arrival_info, now)
+        cached_departures = self._future_departure_times(
+            self._last_stop_arrival_info,
+            now,
+            self._monitored_departures,
+        )
 
         if self._stop_arrivals_backoff_until and now < self._stop_arrivals_backoff_until:
             self.info = cached_departures
@@ -358,23 +370,28 @@ class PublicTransportData:
                 f"{self._stop_arrivals_backoff_until.strftime(TIME_STR_FORMAT)}"
             )
 
-        departure_times = {}
+        departure_times = cached_departures
+        stop_ids_to_refresh = self._get_stop_ids_to_refresh(now)
 
-        for route_id, stop_id in self._monitored_departures:
-            departure_times.setdefault(route_id, {})
-            departure_times[route_id][stop_id] = []
+        if not stop_ids_to_refresh:
+            self.info = departure_times
+            self._last_stop_arrival_info = departure_times
+            return None
+
+        for stop_id in stop_ids_to_refresh:
             try:
                 url = self._stop_arrivals_url_template.format(stop_id=stop_id)
                 response = requests.get(url, headers=self._headers, timeout=REQUEST_TIMEOUT)
                 if response.status_code == 429:
                     retry_after = self._get_stop_arrivals_retry_after(response)
                     self._stop_arrivals_backoff_until = now + retry_after
-                    self.info = cached_departures
+                    self.info = departure_times
+                    self._last_stop_arrival_info = departure_times
                     _LOGGER.warning(
                         "Stop-level arrivals rate limited; backing off until %s",
                         self._stop_arrivals_backoff_until.strftime(TIME_STR_FORMAT),
                     )
-                    if self._has_departures(cached_departures):
+                    if self._has_departures(departure_times):
                         return None
                     return (
                         "Stop-level arrivals temporarily rate limited until "
@@ -394,18 +411,51 @@ class PublicTransportData:
 
             entry = (payload.get("data") or {}).get("entry") or {}
             arrivals = entry.get("arrivalsAndDepartures") or []
-            departure_times[route_id][stop_id] = filter_onebusaway_arrivals(arrivals, route_id, now)
+            for route_id in self._stop_arrivals_routes_by_stop.get(stop_id, []):
+                departure_times.setdefault(route_id, {})
+                departure_times[route_id][stop_id] = filter_onebusaway_arrivals(arrivals, route_id, now)
+            self._stop_arrivals_last_refresh[stop_id] = now
 
         self.info = departure_times
         self._last_stop_arrival_info = departure_times
         self._stop_arrivals_backoff_until = None
         return None
 
+    def _get_stop_ids_to_refresh(self, now):
+        if not self._stop_arrivals_stop_ids:
+            return []
+
+        refresh_interval = MIN_TIME_BETWEEN_UPDATES * len(self._stop_arrivals_stop_ids)
+        stale_stop_ids = [
+            stop_id
+            for stop_id in self._stop_arrivals_stop_ids
+            if stop_id not in self._stop_arrivals_last_refresh
+            or now - self._stop_arrivals_last_refresh[stop_id] >= refresh_interval
+        ]
+
+        if not stale_stop_ids:
+            return []
+
+        if len(self._stop_arrivals_last_refresh) < len(self._stop_arrivals_stop_ids):
+            return stale_stop_ids
+
+        for offset in range(len(self._stop_arrivals_stop_ids)):
+            index = (self._stop_arrivals_refresh_cursor + offset) % len(self._stop_arrivals_stop_ids)
+            stop_id = self._stop_arrivals_stop_ids[index]
+            if stop_id in stale_stop_ids:
+                self._stop_arrivals_refresh_cursor = (index + 1) % len(self._stop_arrivals_stop_ids)
+                return [stop_id]
+
+        return []
+
     @staticmethod
-    def _future_departure_times(departure_times, now):
+    def _future_departure_times(departure_times, now, monitored_departures=None):
         future_departures = {}
+        for route_id, stop_id in monitored_departures or []:
+            future_departures.setdefault(route_id, {})
+            future_departures[route_id].setdefault(stop_id, [])
         for route_id, stops in (departure_times or {}).items():
-            future_departures[route_id] = {}
+            future_departures.setdefault(route_id, {})
             for stop_id, details in stops.items():
                 future_departures[route_id][stop_id] = [
                     detail for detail in details if detail.arrival_time > now

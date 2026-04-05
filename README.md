@@ -126,6 +126,8 @@ When the feed is configured under the top-level `gtfs_rt:` key, the integration 
 
 If both `trip_update_url` and `stop_arrivals_url_template` are configured, the stop-level arrivals endpoint is used as the primary realtime source and the trip-update feed remains available as a compatibility fallback in the configuration.
 
+Because the OneBusAway REST API is a stop-level endpoint and uses API-key throttling, the integration automatically deduplicates repeated stop IDs, warms the cache on startup, then refreshes only one unique stop per update cycle in round-robin order while honoring `Retry-After` on HTTP `429` responses. This reduces steady-state request volume for multi-stop feeds without requiring extra YAML tuning.
+
 The legacy `sensor: - platform: gtfs_rt` format still works, but it will not create route devices and is now considered deprecated.
 
 ## Screenshot
