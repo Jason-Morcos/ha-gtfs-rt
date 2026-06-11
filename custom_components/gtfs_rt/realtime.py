@@ -3,6 +3,11 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
+TRACKING_SOURCE_GTFS_RT = "gtfs_rt"
+TRACKING_SOURCE_ONEBUSAWAY = "onebusaway"
+TRACKING_SOURCE_SCHEDULE = "schedule"
+TRACKING_SOURCE_TRANSIT_APP = "transit_app"
+
 
 @dataclass(frozen=True)
 class RealtimePosition:
@@ -16,6 +21,8 @@ class StopDetails:
     position: RealtimePosition | None
     occupancy: str | None
     delay: int | None
+    tracking_source: str = TRACKING_SOURCE_GTFS_RT
+    is_realtime: bool = True
 
 
 def normalize_prefixed_id(value: str | None) -> str | None:
@@ -77,12 +84,15 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
         or None
     )
     delay = int((predicted_ms - scheduled_ms) / 1000) if predicted_ms and scheduled_ms else None
+    is_realtime = bool(predicted_ms)
 
     return StopDetails(
         arrival_time=dt.datetime.fromtimestamp(chosen_ms / 1000),
         position=position,
         occupancy=occupancy or None,
         delay=delay,
+        tracking_source=TRACKING_SOURCE_ONEBUSAWAY if is_realtime else TRACKING_SOURCE_SCHEDULE,
+        is_realtime=is_realtime,
     )
 
 
@@ -100,5 +110,70 @@ def filter_onebusaway_arrivals(
         if details is None or details.arrival_time <= now:
             continue
         matches.append(details)
+    matches.sort(key=lambda item: item.arrival_time)
+    return matches
+
+
+def build_transit_app_stop_details(item: dict) -> StopDetails | None:
+    """Convert a Transit app schedule item into StopDetails."""
+    departure_time = item.get("departure_time")
+    if not isinstance(departure_time, int):
+        return None
+
+    is_realtime = bool(item.get("is_real_time"))
+
+    scheduled_time = item.get("scheduled_departure_time") or item.get("scheduled_time")
+    delay = None
+    if isinstance(scheduled_time, int):
+        delay = departure_time - scheduled_time
+
+    occupancy = item.get("occupancy") or item.get("occupancy_status") or None
+
+    return StopDetails(
+        arrival_time=dt.datetime.fromtimestamp(departure_time),
+        position=None,
+        occupancy=occupancy,
+        delay=delay,
+        tracking_source=TRACKING_SOURCE_TRANSIT_APP if is_realtime else TRACKING_SOURCE_SCHEDULE,
+        is_realtime=is_realtime,
+    )
+
+
+def transit_route_matches(configured_route: str, route_entry: dict) -> bool:
+    """Match a configured Transit route label against a Transit API route entry."""
+    configured = str(configured_route)
+    return configured in {
+        str(route_entry.get("route_short_name") or ""),
+        str(route_entry.get("route_id") or ""),
+        str(route_entry.get("global_route_id") or ""),
+    }
+
+
+def filter_transit_app_departures(
+    route_departures: list[dict],
+    *,
+    global_stop_id: str,
+    configured_route: str,
+    now: dt.datetime,
+) -> list[StopDetails]:
+    """Select and sort future Transit app departures for a stop/route."""
+    matches: list[StopDetails] = []
+    for route_entry in route_departures:
+        if str(route_entry.get("global_stop_id") or "") != str(global_stop_id):
+            continue
+        if not transit_route_matches(configured_route, route_entry):
+            continue
+
+        for itinerary in route_entry.get("itineraries") or []:
+            if not isinstance(itinerary, dict):
+                continue
+            for item in itinerary.get("schedule_items") or []:
+                if not isinstance(item, dict) or item.get("is_cancelled"):
+                    continue
+                details = build_transit_app_stop_details(item)
+                if details is None or details.arrival_time <= now:
+                    continue
+                matches.append(details)
+
     matches.sort(key=lambda item: item.arrival_time)
     return matches

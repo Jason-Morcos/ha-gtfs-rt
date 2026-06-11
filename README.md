@@ -45,11 +45,14 @@ gtfs_rt:
     vehicle_position_url: 'http://api.pugetsound.onebusaway.org/api/gtfs_realtime/vehicle-positions-for-agency/1.pb?key=TEST'
     stop_arrivals_url_template: 'https://api.pugetsound.onebusaway.org/api/where/arrivals-and-departures-for-stop/1_{stop_id}.json?key=TEST&minutesBefore=0&minutesAfter=120'
     static_schedule_url: 'https://metro.kingcounty.gov/gtfs/google_transit.zip'
+    transit_api_key: !secret transit_api_key
     departures:
       - name: "48 to Uni"
         unique_id: 8af3e2dd-9f0a-4b84-8ec0-109c9d2a7c4f
         route: 100228
         stopid: 36800
+        transit_global_stop_id: KCM:12345
+        transit_route: 48
 ```
 
 ```yaml
@@ -100,11 +103,14 @@ Configuration variables:
 - **vehicle_position_url** (*Optional*): Provides live bus position tracking on the home assistant map
 - **stop_arrivals_url_template** (*Optional*): A stop-level arrivals endpoint template with a `{stop_id}` placeholder. When configured, it becomes the primary realtime source and is useful for agencies whose GTFS-RT TripUpdates omit the watched stops.
 - **static_schedule_url** (*Optional*): A static GTFS ZIP feed used to validate whether a stop is valid and whether service should currently exist. When configured, the entity stays `unknown` during normal no-service windows, and also stays `unknown` when a valid route/stop pair is missing from a truncated realtime stop list. It becomes `unavailable` when the route/stop is invalid or when the realtime feed itself cannot be fetched.
+- **transit_api_key** (*Optional*): Transit app API key. When configured with per-departure `transit_global_stop_id` values, Transit app stop departures are used as the preferred realtime source and GTFS/stop-arrivals remain available as fallback data.
 - **headers**(*Optional*): Expects a dictionary. If provided, the dictionary will be sent as headers. (e.g. {"Authorization": "mykey"})
 - **departures** (*Required*): A list of routes and departure locations to watch
 - **unique_id** (*Optional*): A UUID for the entity to allow entity registry entries
 - **route** (*Optional*): The name of the gtfs route
 - **stopid** (*Optional*): The stopid for the location you want etas for
+- **transit_global_stop_id** (*Optional*): Transit app global stop id for this departure, such as `AGENCY:12345`.
+- **transit_route** (*Optional*): Transit app route label/id for this departure. Defaults to `route` when omitted.
 
 When `static_schedule_url` is configured, each sensor also adds:
 
@@ -120,11 +126,15 @@ Each sensor also exposes `Upcoming departures`, a list of up to five upcoming tr
 - `due_in`
 - `delay_minutes`
 - `occupancy`
+- `tracking_source` (`transit_app`, `onebusaway`, `gtfs_rt`, or `schedule`)
+- `is_realtime`
 - `latitude` / `longitude` when live vehicle position data is available
 
 When the feed is configured under the top-level `gtfs_rt:` key, the integration imports it into a Home Assistant config entry. That allows each route to appear as its own service device, so a line like `372` can group all of your chosen stops under a single device.
 
 If both `trip_update_url` and `stop_arrivals_url_template` are configured, the stop-level arrivals endpoint is used as the primary realtime source and the trip-update feed remains available as a compatibility fallback in the configuration.
+
+If `transit_api_key` and `transit_global_stop_id` are configured, Transit app stop departures are preferred for those mapped departures. If Transit app refresh fails or is rate limited, the integration keeps using cached Transit data when available and otherwise falls back to the stop-arrivals / GTFS-RT sources.
 
 Because the OneBusAway REST API is a stop-level endpoint and uses API-key throttling, the integration automatically deduplicates repeated stop IDs, warms the cache on startup, then refreshes only one unique stop per update cycle in round-robin order while honoring `Retry-After` on HTTP `429` responses. This reduces steady-state request volume for multi-stop feeds without requiring extra YAML tuning.
 

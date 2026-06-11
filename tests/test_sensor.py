@@ -158,6 +158,8 @@ class SensorUpdateTests(unittest.TestCase):
 
         self.assertEqual(sensor.state, 2)
         self.assertEqual(attrs[sensor_module.ATTR_NEXT_UP], "16:09")
+        self.assertEqual(attrs[sensor_module.ATTR_TRACKING_SOURCE], "gtfs_rt")
+        self.assertEqual(attrs[sensor_module.ATTR_NEXT_TRACKING_SOURCE], "gtfs_rt")
         self.assertEqual(len(attrs[sensor_module.ATTR_UPCOMING_DEPARTURES]), 5)
         self.assertEqual(
             attrs[sensor_module.ATTR_UPCOMING_DEPARTURES][0],
@@ -166,6 +168,8 @@ class SensorUpdateTests(unittest.TestCase):
                 "due_in": 2,
                 "delay_minutes": 2.0,
                 "occupancy": "FEW_SEATS_AVAILABLE",
+                "tracking_source": "gtfs_rt",
+                "is_realtime": True,
                 "latitude": 47.1,
                 "longitude": -122.1,
             },
@@ -177,8 +181,113 @@ class SensorUpdateTests(unittest.TestCase):
                 "due_in": 9,
                 "delay_minutes": 5.0,
                 "occupancy": "STANDING_ROOM_ONLY",
+                "tracking_source": "gtfs_rt",
+                "is_realtime": True,
             },
         )
+
+    def test_transit_app_departures_override_fallback_data(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("route-100", "stop-123")],
+            static_schedule_url=None,
+            stop_arrivals_url_template=None,
+            transit_api_key="test-transit-key",
+            transit_departures=[("route-100", "stop-123", "AGENCY:stop-123", "10")],
+        )
+
+        fallback_departure = StopDetails(now + dt.timedelta(minutes=12), None, None, None)
+
+        def fallback_trip_updates(_positions, _vehicles_trips, _occupancy):
+            data.info = {"route-100": {"stop-123": [fallback_departure]}}
+
+        request_calls = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "route_departures": [
+                        {
+                            "global_stop_id": "AGENCY:stop-123",
+                            "route_short_name": "10",
+                            "itineraries": [
+                                {
+                                    "schedule_items": [
+                                        {
+                                            "departure_time": int(
+                                                (now + dt.timedelta(minutes=4)).timestamp()
+                                            ),
+                                            "scheduled_departure_time": int(
+                                                (now + dt.timedelta(minutes=3)).timestamp()
+                                            ),
+                                            "is_real_time": True,
+                                        }
+                                    ]
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+        def fake_get(url, **kwargs):
+            request_calls.append((url, kwargs))
+            return FakeResponse()
+
+        data._update_route_statuses = fallback_trip_updates
+        sensor_module.requests.get = fake_get
+
+        data.update()
+
+        self.assertEqual(
+            request_calls[0][0],
+            const_module.TRANSIT_API_STOP_DEPARTURES_URL,
+        )
+        self.assertEqual(request_calls[0][1]["headers"]["apiKey"], "test-transit-key")
+        self.assertEqual(request_calls[0][1]["params"]["global_stop_ids"], "AGENCY:stop-123")
+        departures = data.info["route-100"]["stop-123"]
+        self.assertEqual(len(departures), 1)
+        self.assertEqual(departures[0].arrival_time, now + dt.timedelta(minutes=4))
+        self.assertEqual(departures[0].tracking_source, "transit_app")
+        self.assertTrue(departures[0].is_realtime)
+        self.assertIsNone(data.last_trip_update_error)
+
+    def test_transit_app_failure_keeps_fallback_data(self):
+        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        dt_mod.now = lambda: now
+        data = PublicTransportData(
+            trip_update_url="https://example.com/tripupdates.pb",
+            vehicle_position_url=None,
+            headers={},
+            monitored_departures=[("route-100", "stop-123")],
+            static_schedule_url=None,
+            stop_arrivals_url_template=None,
+            transit_api_key="test-transit-key",
+            transit_departures=[("route-100", "stop-123", "AGENCY:stop-123", "10")],
+        )
+        fallback_departure = StopDetails(now + dt.timedelta(minutes=12), None, None, None)
+
+        def fallback_trip_updates(_positions, _vehicles_trips, _occupancy):
+            data.info = {"route-100": {"stop-123": [fallback_departure]}}
+
+        def fail_get(*_args, **_kwargs):
+            raise RuntimeError("transit down")
+
+        data._update_route_statuses = fallback_trip_updates
+        sensor_module.requests.get = fail_get
+
+        data.update()
+
+        self.assertEqual(data.info["route-100"]["stop-123"], [fallback_departure])
+        self.assertIsNone(data.last_trip_update_error)
 
     def test_stop_arrivals_failure_falls_back_to_trip_updates(self):
         data = PublicTransportData(

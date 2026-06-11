@@ -24,6 +24,10 @@ from .const import (
     CONF_STATIC_SCHEDULE_URL,
     CONF_STOP_ID,
     CONF_STOP_ARRIVALS_URL_TEMPLATE,
+    CONF_TRANSIT_API_KEY,
+    CONF_TRANSIT_GLOBAL_STOP_ID,
+    CONF_TRANSIT_ROUTE,
+    TRANSIT_API_STOP_DEPARTURES_URL,
     CONF_TRIP_UPDATE_URL,
     CONF_VEHICLE_POSITION_URL,
     DEFAULT_NAME,
@@ -33,7 +37,12 @@ from .const import (
     TIME_STR_FORMAT,
 )
 from .health import STATUS_LOOKUP_FAILED, STATUS_SERVICE_EXPECTED, StaticScheduleValidator
-from .realtime import StopDetails, filter_onebusaway_arrivals
+from .realtime import (
+    TRACKING_SOURCE_GTFS_RT,
+    StopDetails,
+    filter_onebusaway_arrivals,
+    filter_transit_app_departures,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,12 +56,14 @@ ATTR_NEXT_UP = "Next bus"
 ATTR_NEXT_UP_DUE_IN = "Next bus due in"
 ATTR_NEXT_DELAYED_BY = "Next bus delayed by"
 ATTR_NEXT_OCCUPANCY = "Next bus occupancy"
+ATTR_NEXT_TRACKING_SOURCE = "Next bus tracking source"
 ATTR_UPCOMING_DEPARTURES = "Upcoming departures"
 ATTR_SERVICE_STATUS = "Service status"
 ATTR_SERVICE_TODAY = "Service today"
 ATTR_SERVICE_EXPECTED_NOW = "Service expected now"
 ATTR_NEXT_SCHEDULED_DEPARTURE = "Next scheduled departure"
 ATTR_PROBLEM_REASON = "Problem reason"
+ATTR_TRACKING_SOURCE = "Tracking source"
 
 MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=60)
 DEFAULT_STOP_ARRIVALS_BACKOFF = datetime.timedelta(minutes=5)
@@ -87,6 +98,8 @@ def departure_attributes(detail):
         "due_in": due_in_minutes(detail.arrival_time),
         "delay_minutes": detail.delay / 60.0 if detail.delay else None,
         "occupancy": detail.occupancy,
+        "tracking_source": detail.tracking_source,
+        "is_realtime": detail.is_realtime,
     }
     if detail.position:
         attrs["latitude"] = detail.position.latitude
@@ -99,6 +112,16 @@ def _build_shared_data(config):
         (departure[CONF_ROUTE], departure[CONF_STOP_ID])
         for departure in config[CONF_DEPARTURES]
     ]
+    transit_departures = [
+        (
+            departure[CONF_ROUTE],
+            departure[CONF_STOP_ID],
+            departure[CONF_TRANSIT_GLOBAL_STOP_ID],
+            departure.get(CONF_TRANSIT_ROUTE, departure[CONF_ROUTE]),
+        )
+        for departure in config[CONF_DEPARTURES]
+        if departure.get(CONF_TRANSIT_GLOBAL_STOP_ID)
+    ]
     return PublicTransportData(
         config[CONF_TRIP_UPDATE_URL],
         config.get(CONF_VEHICLE_POSITION_URL),
@@ -106,6 +129,8 @@ def _build_shared_data(config):
         monitored_departures,
         config.get(CONF_STATIC_SCHEDULE_URL),
         config.get(CONF_STOP_ARRIVALS_URL_TEMPLATE),
+        config.get(CONF_TRANSIT_API_KEY),
+        transit_departures,
     )
 
 
@@ -243,9 +268,11 @@ class PublicTransportSensor(SensorEntity):
             ATTR_NEXT_UP: None,
             ATTR_NEXT_DELAYED_BY: None,
             ATTR_NEXT_OCCUPANCY: None,
+            ATTR_NEXT_TRACKING_SOURCE: None,
             ATTR_UPCOMING_DEPARTURES: [],
             ATTR_STOP_ID: self._stop,
             ATTR_ROUTE: self._route,
+            ATTR_TRACKING_SOURCE: None,
             ATTR_SERVICE_STATUS: schedule_status.status if schedule_status else None,
             ATTR_SERVICE_TODAY: schedule_status.service_today if schedule_status else None,
             ATTR_SERVICE_EXPECTED_NOW: schedule_status.service_expected_now if schedule_status else None,
@@ -260,6 +287,7 @@ class PublicTransportSensor(SensorEntity):
             attrs[ATTR_DUE_AT] = next_buses[0].arrival_time.strftime(TIME_STR_FORMAT)
             attrs[ATTR_OCCUPANCY] = next_buses[0].occupancy
             attrs[ATTR_DELAYED_BY] = next_buses[0].delay / 60.0 if next_buses[0].delay else None
+            attrs[ATTR_TRACKING_SOURCE] = next_buses[0].tracking_source
             if next_buses[0].position:
                 attrs[ATTR_LATITUDE] = next_buses[0].position.latitude
                 attrs[ATTR_LONGITUDE] = next_buses[0].position.longitude
@@ -268,6 +296,7 @@ class PublicTransportSensor(SensorEntity):
             attrs[ATTR_NEXT_UP_DUE_IN] = due_in_minutes(next_buses[1].arrival_time)
             attrs[ATTR_NEXT_OCCUPANCY] = next_buses[1].occupancy
             attrs[ATTR_NEXT_DELAYED_BY] = next_buses[1].delay / 60.0 if next_buses[1].delay else None
+            attrs[ATTR_NEXT_TRACKING_SOURCE] = next_buses[1].tracking_source
         if next_buses:
             attrs[ATTR_UPCOMING_DEPARTURES] = [
                 departure_attributes(detail) for detail in next_buses[:MAX_UPCOMING_DEPARTURES]
@@ -289,12 +318,16 @@ class PublicTransportData:
         monitored_departures=None,
         static_schedule_url=None,
         stop_arrivals_url_template=None,
+        transit_api_key=None,
+        transit_departures=None,
     ):
         self._trip_update_url = trip_update_url
         self._vehicle_position_url = vehicle_position_url
         self._headers = headers or {}
         self._monitored_departures = monitored_departures or []
         self._stop_arrivals_url_template = stop_arrivals_url_template
+        self._transit_api_key = transit_api_key
+        self._transit_departures = transit_departures or []
         self._schedule_validator = (
             StaticScheduleValidator(static_schedule_url, self._monitored_departures, self._headers)
             if static_schedule_url
@@ -313,6 +346,8 @@ class PublicTransportData:
         self._stop_arrivals_last_refresh = {}
         self._stop_arrivals_refresh_cursor = 0
         self._stop_arrivals_backoff_until = None
+        self._last_transit_app_info = {}
+        self._transit_app_backoff_until = None
 
     def get_schedule_status(self, route_id, stop_id):
         return self._schedule_status.get((route_id, stop_id))
@@ -343,6 +378,12 @@ class PublicTransportData:
                 self._get_vehicle_positions() if self._vehicle_position_url else ({}, {}, {})
             )
             self._update_route_statuses(positions, vehicles_trips, occupancy)
+
+        transit_app_error = self._update_transit_app_statuses()
+        if self._has_departures(self.info):
+            self.last_trip_update_error = None
+        elif transit_app_error and not self.last_trip_update_error:
+            self.last_trip_update_error = transit_app_error
 
         if self._schedule_validator:
             now = dt_util.now()
@@ -421,6 +462,87 @@ class PublicTransportData:
         self._stop_arrivals_backoff_until = None
         return None
 
+    def _update_transit_app_statuses(self):
+        if not self._transit_api_key or not self._transit_departures:
+            return None
+
+        now = dt_util.now().replace(tzinfo=None)
+        cached_departures = self._future_departure_times(
+            self._last_transit_app_info,
+            now,
+            None,
+        )
+
+        if self._transit_app_backoff_until and now < self._transit_app_backoff_until:
+            self._merge_departure_times(cached_departures)
+            if self._has_departures(cached_departures):
+                return None
+            return (
+                "Transit app departures temporarily rate limited until "
+                f"{self._transit_app_backoff_until.strftime(TIME_STR_FORMAT)}"
+            )
+
+        global_stop_ids = sorted(
+            {
+                global_stop_id
+                for _route, _stop, global_stop_id, _transit_route in self._transit_departures
+            }
+        )
+        try:
+            response = requests.get(
+                TRANSIT_API_STOP_DEPARTURES_URL,
+                params={
+                    "global_stop_ids": ",".join(global_stop_ids),
+                    "max_num_departures": str(MAX_UPCOMING_DEPARTURES),
+                    "should_update_realtime": "true",
+                    "remove_cancelled": "false",
+                },
+                headers={
+                    "apiKey": self._transit_api_key,
+                    "Accept": "application/json",
+                    "Accept-Language": "en",
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if response.status_code == 429:
+                retry_after = self._get_stop_arrivals_retry_after(response)
+                self._transit_app_backoff_until = now + retry_after
+                self._merge_departure_times(cached_departures)
+                self._last_transit_app_info = cached_departures
+                _LOGGER.warning(
+                    "Transit app departures rate limited; backing off until %s",
+                    self._transit_app_backoff_until.strftime(TIME_STR_FORMAT),
+                )
+                if self._has_departures(cached_departures):
+                    return None
+                return (
+                    "Transit app departures temporarily rate limited until "
+                    f"{self._transit_app_backoff_until.strftime(TIME_STR_FORMAT)}"
+                )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as err:
+            _LOGGER.warning("Unable to refresh Transit app departures: %s", err)
+            self._merge_departure_times(cached_departures)
+            self._last_transit_app_info = cached_departures
+            return f"Transit app departures unavailable: {err}"
+
+        route_departures = payload.get("route_departures") or []
+        transit_departure_times = {}
+        for route_id, stop_id, global_stop_id, transit_route in self._transit_departures:
+            transit_departure_times.setdefault(route_id, {})
+            transit_departure_times[route_id][stop_id] = filter_transit_app_departures(
+                route_departures,
+                global_stop_id=global_stop_id,
+                configured_route=transit_route,
+                now=now,
+            )
+
+        self._merge_departure_times(transit_departure_times)
+        self._last_transit_app_info = transit_departure_times
+        self._transit_app_backoff_until = None
+        return None
+
     def _get_stop_ids_to_refresh(self, now):
         if not self._stop_arrivals_stop_ids:
             return []
@@ -469,6 +591,12 @@ class PublicTransportData:
             for stops in (departure_times or {}).values()
             for details in stops.values()
         )
+
+    def _merge_departure_times(self, departure_times):
+        for route_id, stops in (departure_times or {}).items():
+            self.info.setdefault(route_id, {})
+            for stop_id, details in stops.items():
+                self.info[route_id][stop_id] = details
 
     @staticmethod
     def _get_stop_arrivals_retry_after(response):
@@ -520,6 +648,8 @@ class PublicTransportData:
                         vehicle_positions.get(vehicle_id),
                         vehicle_occupancy.get(vehicle_id),
                         stop.departure.delay,
+                        TRACKING_SOURCE_GTFS_RT,
+                        True,
                     )
                     departure_times[route_id][stop_id].append(details)
                 elif int(stop.arrival.time) > int(time.time()):
@@ -528,6 +658,8 @@ class PublicTransportData:
                         vehicle_positions.get(vehicle_id),
                         vehicle_occupancy.get(vehicle_id),
                         stop.arrival.delay,
+                        TRACKING_SOURCE_GTFS_RT,
+                        True,
                     )
                     departure_times[route_id][stop_id].append(details)
 

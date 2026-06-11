@@ -20,6 +20,9 @@ from .const import (
     CONF_STATIC_SCHEDULE_URL,
     CONF_STOP_ID,
     CONF_STOP_ARRIVALS_URL_TEMPLATE,
+    CONF_TRANSIT_API_KEY,
+    CONF_TRANSIT_GLOBAL_STOP_ID,
+    CONF_TRANSIT_ROUTE,
     CONF_TRIP_UPDATE_URL,
     CONF_VEHICLE_POSITION_URL,
     CONF_X_API_KEY,
@@ -32,6 +35,8 @@ DEPARTURE_SCHEMA = {
     vol.Optional(CONF_UNIQUE_ID): cv.string,
     vol.Required(CONF_STOP_ID): cv.string,
     vol.Required(CONF_ROUTE): cv.string,
+    vol.Optional(CONF_TRANSIT_GLOBAL_STOP_ID): cv.string,
+    vol.Optional(CONF_TRANSIT_ROUTE): cv.string,
 }
 
 FEED_CONFIG_SCHEMA = {
@@ -45,6 +50,7 @@ FEED_CONFIG_SCHEMA = {
     vol.Optional(CONF_VEHICLE_POSITION_URL): cv.string,
     vol.Optional(CONF_STATIC_SCHEDULE_URL): cv.string,
     vol.Optional(CONF_STOP_ARRIVALS_URL_TEMPLATE): cv.string,
+    vol.Optional(CONF_TRANSIT_API_KEY): cv.string,
     vol.Required(CONF_DEPARTURES): [DEPARTURE_SCHEMA],
 }
 
@@ -116,6 +122,10 @@ def normalize_feed_config(config: dict) -> dict:
             CONF_ROUTE: str(departure[CONF_ROUTE]),
             CONF_STOP_ID: str(departure[CONF_STOP_ID]),
         }
+        if transit_stop_id := departure.get(CONF_TRANSIT_GLOBAL_STOP_ID):
+            departure_dict[CONF_TRANSIT_GLOBAL_STOP_ID] = str(transit_stop_id)
+        if transit_route := departure.get(CONF_TRANSIT_ROUTE):
+            departure_dict[CONF_TRANSIT_ROUTE] = str(transit_route)
         departure_dict[CONF_UNIQUE_ID] = str(
             departure.get(CONF_UNIQUE_ID) or derive_departure_unique_id(feed_id, departure_dict)
         )
@@ -135,6 +145,8 @@ def normalize_feed_config(config: dict) -> dict:
         normalized[CONF_STATIC_SCHEDULE_URL] = static_schedule_url
     if stop_arrivals_url_template := config.get(CONF_STOP_ARRIVALS_URL_TEMPLATE):
         normalized[CONF_STOP_ARRIVALS_URL_TEMPLATE] = stop_arrivals_url_template
+    if transit_api_key := config.get(CONF_TRANSIT_API_KEY):
+        normalized[CONF_TRANSIT_API_KEY] = transit_api_key
     if entity_namespace := config.get(CONF_ENTITY_NAMESPACE):
         normalized[CONF_ENTITY_NAMESPACE] = entity_namespace
     return normalized

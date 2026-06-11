@@ -13,6 +13,7 @@ sys.modules[SPEC.name] = REALTIME
 SPEC.loader.exec_module(REALTIME)
 
 filter_onebusaway_arrivals = REALTIME.filter_onebusaway_arrivals
+filter_transit_app_departures = REALTIME.filter_transit_app_departures
 route_id_matches = REALTIME.route_id_matches
 
 
@@ -64,8 +65,75 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details[0].arrival_time, dt.datetime.fromtimestamp(1775258100))
         self.assertEqual(details[0].delay, 60)
         self.assertEqual(details[0].position.latitude, 47.0)
+        self.assertEqual(details[0].tracking_source, REALTIME.TRACKING_SOURCE_ONEBUSAWAY)
+        self.assertTrue(details[0].is_realtime)
         self.assertEqual(details[1].arrival_time, dt.datetime.fromtimestamp(1775259000))
         self.assertIsNone(details[1].delay)
+        self.assertEqual(details[1].tracking_source, REALTIME.TRACKING_SOURCE_SCHEDULE)
+        self.assertFalse(details[1].is_realtime)
+
+    def test_filter_transit_app_departures_uses_realtime_source_metadata(self):
+        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        departures = [
+            {
+                "global_stop_id": "AGENCY:1234",
+                "route_short_name": "10",
+                "itineraries": [
+                    {
+                        "schedule_items": [
+                            {
+                                "departure_time": int((now + dt.timedelta(minutes=3)).timestamp()),
+                                "scheduled_departure_time": int((now + dt.timedelta(minutes=2)).timestamp()),
+                                "is_real_time": True,
+                            },
+                            {
+                                "departure_time": int((now + dt.timedelta(minutes=8)).timestamp()),
+                                "is_real_time": False,
+                            },
+                            {
+                                "departure_time": int((now - dt.timedelta(minutes=1)).timestamp()),
+                                "is_real_time": True,
+                            },
+                            {
+                                "departure_time": int((now + dt.timedelta(minutes=12)).timestamp()),
+                                "is_real_time": True,
+                                "is_cancelled": True,
+                            },
+                        ]
+                    }
+                ],
+            },
+            {
+                "global_stop_id": "AGENCY:1234",
+                "route_short_name": "20",
+                "itineraries": [
+                    {
+                        "schedule_items": [
+                            {
+                                "departure_time": int((now + dt.timedelta(minutes=4)).timestamp()),
+                                "is_real_time": True,
+                            }
+                        ]
+                    }
+                ],
+            },
+        ]
+
+        details = filter_transit_app_departures(
+            departures,
+            global_stop_id="AGENCY:1234",
+            configured_route="10",
+            now=now,
+        )
+
+        self.assertEqual(len(details), 2)
+        self.assertEqual(details[0].arrival_time, now + dt.timedelta(minutes=3))
+        self.assertEqual(details[0].delay, 60)
+        self.assertEqual(details[0].tracking_source, REALTIME.TRACKING_SOURCE_TRANSIT_APP)
+        self.assertTrue(details[0].is_realtime)
+        self.assertEqual(details[1].arrival_time, now + dt.timedelta(minutes=8))
+        self.assertEqual(details[1].tracking_source, REALTIME.TRACKING_SOURCE_SCHEDULE)
+        self.assertFalse(details[1].is_realtime)
 
 
 if __name__ == "__main__":
