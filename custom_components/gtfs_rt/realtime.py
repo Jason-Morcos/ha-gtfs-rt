@@ -23,6 +23,75 @@ class StopDetails:
     delay: int | None
     tracking_source: str = TRACKING_SOURCE_GTFS_RT
     is_realtime: bool = True
+    trip_id: str | None = None
+
+
+DUPLICATE_DEPARTURE_WINDOW = dt.timedelta(seconds=90)
+TRACKING_SOURCE_PRIORITY = {
+    TRACKING_SOURCE_SCHEDULE: 0,
+    TRACKING_SOURCE_GTFS_RT: 1,
+    TRACKING_SOURCE_ONEBUSAWAY: 2,
+    TRACKING_SOURCE_TRANSIT_APP: 3,
+}
+
+
+def _string_or_none(value) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _trip_ids(details: list[StopDetails]) -> set[str]:
+    return {detail.trip_id for detail in details if detail.trip_id}
+
+
+def _shares_trip_id(detail: StopDetails, group: list[StopDetails]) -> bool:
+    return bool(detail.trip_id and detail.trip_id in _trip_ids(group))
+
+
+def _within_duplicate_window(detail: StopDetails, group: list[StopDetails]) -> bool:
+    return any(
+        abs(detail.arrival_time - candidate.arrival_time) <= DUPLICATE_DEPARTURE_WINDOW
+        for candidate in group
+    )
+
+
+def _can_merge_by_time(detail: StopDetails, group: list[StopDetails]) -> bool:
+    group_trip_ids = _trip_ids(group)
+    if detail.trip_id and group_trip_ids and detail.trip_id not in group_trip_ids:
+        return False
+    if not _within_duplicate_window(detail, group):
+        return False
+
+    # Time proximity alone can collapse genuinely frequent service. Only use it
+    # as a fallback when distinct providers report what is probably the same trip.
+    return any(detail.tracking_source != candidate.tracking_source for candidate in group)
+
+
+def _departure_quality(detail: StopDetails):
+    return (
+        TRACKING_SOURCE_PRIORITY.get(detail.tracking_source, 0),
+        int(detail.is_realtime),
+        int(detail.position is not None),
+        int(detail.occupancy is not None),
+        int(detail.delay is not None),
+    )
+
+
+def combine_duplicate_departures(details: list[StopDetails]) -> list[StopDetails]:
+    """Combine duplicate departures reported by multiple realtime sources."""
+    groups: list[list[StopDetails]] = []
+    for detail in sorted(details, key=lambda item: item.arrival_time):
+        for group in groups:
+            if _shares_trip_id(detail, group) or _can_merge_by_time(detail, group):
+                group.append(detail)
+                break
+        else:
+            groups.append([detail])
+
+    combined = [max(group, key=_departure_quality) for group in groups]
+    combined.sort(key=lambda item: item.arrival_time)
+    return combined
 
 
 def normalize_prefixed_id(value: str | None) -> str | None:
@@ -93,6 +162,7 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
         delay=delay,
         tracking_source=TRACKING_SOURCE_ONEBUSAWAY if is_realtime else TRACKING_SOURCE_SCHEDULE,
         is_realtime=is_realtime,
+        trip_id=_string_or_none(item.get("tripId") or trip_status.get("activeTripId")),
     )
 
 
@@ -110,8 +180,7 @@ def filter_onebusaway_arrivals(
         if details is None or details.arrival_time <= now:
             continue
         matches.append(details)
-    matches.sort(key=lambda item: item.arrival_time)
-    return matches
+    return combine_duplicate_departures(matches)
 
 
 def build_transit_app_stop_details(item: dict) -> StopDetails | None:
@@ -136,6 +205,11 @@ def build_transit_app_stop_details(item: dict) -> StopDetails | None:
         delay=delay,
         tracking_source=TRACKING_SOURCE_TRANSIT_APP if is_realtime else TRACKING_SOURCE_SCHEDULE,
         is_realtime=is_realtime,
+        trip_id=_string_or_none(
+            item.get("rt_trip_id")
+            or item.get("trip_id")
+            or item.get("trip_search_key")
+        ),
     )
 
 
@@ -164,7 +238,9 @@ def filter_transit_app_departures(
         if not transit_route_matches(configured_route, route_entry):
             continue
 
-        for itinerary in route_entry.get("itineraries") or []:
+        itineraries = list(route_entry.get("itineraries") or [])
+        itineraries.extend(route_entry.get("merged_itineraries") or [])
+        for itinerary in itineraries:
             if not isinstance(itinerary, dict):
                 continue
             for item in itinerary.get("schedule_items") or []:
@@ -175,5 +251,4 @@ def filter_transit_app_departures(
                     continue
                 matches.append(details)
 
-    matches.sort(key=lambda item: item.arrival_time)
-    return matches
+    return combine_duplicate_departures(matches)

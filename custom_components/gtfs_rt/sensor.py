@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from email.utils import parsedate_to_datetime
 import logging
 import time
 from enum import Enum
@@ -40,6 +41,7 @@ from .health import STATUS_LOOKUP_FAILED, STATUS_SERVICE_EXPECTED, StaticSchedul
 from .realtime import (
     TRACKING_SOURCE_GTFS_RT,
     StopDetails,
+    combine_duplicate_departures,
     filter_onebusaway_arrivals,
     filter_transit_app_departures,
 )
@@ -66,8 +68,11 @@ ATTR_PROBLEM_REASON = "Problem reason"
 ATTR_TRACKING_SOURCE = "Tracking source"
 
 MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=60)
+MIN_TRANSIT_APP_REFRESH_INTERVAL = datetime.timedelta(seconds=60)
 DEFAULT_STOP_ARRIVALS_BACKOFF = datetime.timedelta(minutes=5)
 MAX_UPCOMING_DEPARTURES = 5
+TRANSIT_API_MAX_DEPARTURES_PER_REQUEST = 10
+TRANSIT_API_MAX_STOP_IDS_PER_REQUEST = 100
 
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(FEED_CONFIG_SCHEMA)
@@ -104,6 +109,8 @@ def departure_attributes(detail):
     if detail.position:
         attrs["latitude"] = detail.position.latitude
         attrs["longitude"] = detail.position.longitude
+    if detail.trip_id:
+        attrs["trip_id"] = detail.trip_id
     return attrs
 
 
@@ -348,6 +355,7 @@ class PublicTransportData:
         self._stop_arrivals_backoff_until = None
         self._last_transit_app_info = {}
         self._transit_app_backoff_until = None
+        self._transit_app_last_refresh = None
 
     def get_schedule_status(self, route_id, stop_id):
         return self._schedule_status.get((route_id, stop_id))
@@ -482,52 +490,66 @@ class PublicTransportData:
                 f"{self._transit_app_backoff_until.strftime(TIME_STR_FORMAT)}"
             )
 
+        if (
+            self._transit_app_last_refresh
+            and now - self._transit_app_last_refresh < MIN_TRANSIT_APP_REFRESH_INTERVAL
+        ):
+            self._merge_departure_times(cached_departures)
+            return None
+
         global_stop_ids = sorted(
             {
                 global_stop_id
                 for _route, _stop, global_stop_id, _transit_route in self._transit_departures
             }
         )
+        route_departures = []
         try:
-            response = requests.get(
-                TRANSIT_API_STOP_DEPARTURES_URL,
-                params={
-                    "global_stop_ids": ",".join(global_stop_ids),
-                    "max_num_departures": str(MAX_UPCOMING_DEPARTURES),
-                    "should_update_realtime": "true",
-                    "remove_cancelled": "false",
-                },
-                headers={
-                    "apiKey": self._transit_api_key,
-                    "Accept": "application/json",
-                    "Accept-Language": "en",
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-            if response.status_code == 429:
-                retry_after = self._get_stop_arrivals_retry_after(response)
-                self._transit_app_backoff_until = now + retry_after
-                self._merge_departure_times(cached_departures)
-                self._last_transit_app_info = cached_departures
-                _LOGGER.warning(
-                    "Transit app departures rate limited; backing off until %s",
-                    self._transit_app_backoff_until.strftime(TIME_STR_FORMAT),
+            for stop_id_batch in self._chunked(
+                global_stop_ids,
+                TRANSIT_API_MAX_STOP_IDS_PER_REQUEST,
+            ):
+                response = requests.get(
+                    TRANSIT_API_STOP_DEPARTURES_URL,
+                    params={
+                        "global_stop_ids": ",".join(stop_id_batch),
+                        "max_num_departures": str(
+                            min(MAX_UPCOMING_DEPARTURES, TRANSIT_API_MAX_DEPARTURES_PER_REQUEST)
+                        ),
+                        "should_update_realtime": "true",
+                        "remove_cancelled": "false",
+                    },
+                    headers={
+                        "apiKey": self._transit_api_key,
+                        "Accept": "application/json",
+                        "Accept-Language": "en",
+                    },
+                    timeout=REQUEST_TIMEOUT,
                 )
-                if self._has_departures(cached_departures):
-                    return None
-                return (
-                    "Transit app departures temporarily rate limited until "
-                    f"{self._transit_app_backoff_until.strftime(TIME_STR_FORMAT)}"
-                )
-            response.raise_for_status()
-            payload = response.json()
+                if response.status_code == 429:
+                    retry_after = self._get_stop_arrivals_retry_after(response)
+                    self._transit_app_backoff_until = now + retry_after
+                    self._merge_departure_times(cached_departures)
+                    self._last_transit_app_info = cached_departures
+                    _LOGGER.warning(
+                        "Transit app departures rate limited; backing off until %s",
+                        self._transit_app_backoff_until.strftime(TIME_STR_FORMAT),
+                    )
+                    if self._has_departures(cached_departures):
+                        return None
+                    return (
+                        "Transit app departures temporarily rate limited until "
+                        f"{self._transit_app_backoff_until.strftime(TIME_STR_FORMAT)}"
+                    )
+                response.raise_for_status()
+                payload = response.json()
+                route_departures.extend(payload.get("route_departures") or [])
         except Exception as err:
             _LOGGER.warning("Unable to refresh Transit app departures: %s", err)
             self._merge_departure_times(cached_departures)
             self._last_transit_app_info = cached_departures
             return f"Transit app departures unavailable: {err}"
 
-        route_departures = payload.get("route_departures") or []
         transit_departure_times = {}
         for route_id, stop_id, global_stop_id, transit_route in self._transit_departures:
             transit_departure_times.setdefault(route_id, {})
@@ -541,6 +563,7 @@ class PublicTransportData:
         self._merge_departure_times(transit_departure_times)
         self._last_transit_app_info = transit_departure_times
         self._transit_app_backoff_until = None
+        self._transit_app_last_refresh = now
         return None
 
     def _get_stop_ids_to_refresh(self, now):
@@ -579,9 +602,12 @@ class PublicTransportData:
         for route_id, stops in (departure_times or {}).items():
             future_departures.setdefault(route_id, {})
             for stop_id, details in stops.items():
-                future_departures[route_id][stop_id] = [
+                filtered_details = [
                     detail for detail in details if detail.arrival_time > now
                 ]
+                future_departures[route_id][stop_id] = combine_duplicate_departures(
+                    filtered_details
+                )
         return future_departures
 
     @staticmethod
@@ -596,7 +622,10 @@ class PublicTransportData:
         for route_id, stops in (departure_times or {}).items():
             self.info.setdefault(route_id, {})
             for stop_id, details in stops.items():
-                self.info[route_id][stop_id] = details
+                existing = self.info[route_id].get(stop_id, [])
+                self.info[route_id][stop_id] = combine_duplicate_departures(
+                    list(existing) + list(details or [])
+                )
 
     @staticmethod
     def _get_stop_arrivals_retry_after(response):
@@ -608,7 +637,23 @@ class PublicTransportData:
                 seconds = None
             if seconds is not None and seconds > 0:
                 return datetime.timedelta(seconds=seconds)
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=datetime.timezone.utc)
+                seconds = (
+                    retry_at - datetime.datetime.now(datetime.timezone.utc)
+                ).total_seconds()
+            except (TypeError, ValueError):
+                seconds = None
+            if seconds is not None and seconds > 0:
+                return datetime.timedelta(seconds=seconds)
         return DEFAULT_STOP_ARRIVALS_BACKOFF
+
+    @staticmethod
+    def _chunked(items, size):
+        for index in range(0, len(items), size):
+            yield items[index : index + size]
 
     def _update_route_statuses(self, vehicle_positions, vehicles_trips, vehicle_occupancy):
         from google.transit import gtfs_realtime_pb2
@@ -650,6 +695,7 @@ class PublicTransportData:
                         stop.departure.delay,
                         TRACKING_SOURCE_GTFS_RT,
                         True,
+                        entity.trip_update.trip.trip_id or None,
                     )
                     departure_times[route_id][stop_id].append(details)
                 elif int(stop.arrival.time) > int(time.time()):
@@ -660,12 +706,15 @@ class PublicTransportData:
                         stop.arrival.delay,
                         TRACKING_SOURCE_GTFS_RT,
                         True,
+                        entity.trip_update.trip.trip_id or None,
                     )
                     departure_times[route_id][stop_id].append(details)
 
         for route in departure_times:
             for stop in departure_times[route]:
-                departure_times[route][stop].sort(key=lambda item: item.arrival_time)
+                departure_times[route][stop] = combine_duplicate_departures(
+                    departure_times[route][stop]
+                )
 
         self.info = departure_times
 

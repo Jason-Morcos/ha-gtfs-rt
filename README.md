@@ -128,6 +128,7 @@ Each sensor also exposes `Upcoming departures`, a list of up to five upcoming tr
 - `occupancy`
 - `tracking_source` (`transit_app`, `onebusaway`, `gtfs_rt`, or `schedule`)
 - `is_realtime`
+- `trip_id` when the upstream realtime source exposes one
 - `latitude` / `longitude` when live vehicle position data is available
 
 When the feed is configured under the top-level `gtfs_rt:` key, the integration imports it into a Home Assistant config entry. That allows each route to appear as its own service device, so a line like `372` can group all of your chosen stops under a single device.
@@ -135,6 +136,8 @@ When the feed is configured under the top-level `gtfs_rt:` key, the integration 
 If both `trip_update_url` and `stop_arrivals_url_template` are configured, the stop-level arrivals endpoint is used as the primary realtime source and the trip-update feed remains available as a compatibility fallback in the configuration.
 
 If `transit_api_key` and `transit_global_stop_id` are configured, Transit app stop departures are preferred for those mapped departures. If Transit app refresh fails or is rate limited, the integration keeps using cached Transit data when available and otherwise falls back to the stop-arrivals / GTFS-RT sources.
+
+Transit API requests are batched by Transit global stop id, capped at the API's 100-stop request limit, and internally paced so one feed does not repeatedly refresh inside a one-minute window. HTTP `429` responses honor `Retry-After` when present. Departures from Transit, OneBusAway, GTFS-RT, and schedule fallbacks are merged by trip id when available, then by a narrow cross-source time window, so duplicate provider reports do not appear as separate adjacent arrivals while same-source close headways remain intact.
 
 Because the OneBusAway REST API is a stop-level endpoint and uses API-key throttling, the integration automatically deduplicates repeated stop IDs, warms the cache on startup, then refreshes only one unique stop per update cycle in round-robin order while honoring `Retry-After` on HTTP `429` responses. This reduces steady-state request volume for multi-stop feeds without requiring extra YAML tuning.
 
