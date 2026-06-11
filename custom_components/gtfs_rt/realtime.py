@@ -43,12 +43,21 @@ def _string_or_none(value) -> str | None:
     return str(value)
 
 
+def _canonical_trip_id(value: str | None) -> str | None:
+    return normalize_prefixed_id(value)
+
+
 def _trip_ids(details: list[StopDetails]) -> set[str]:
-    return {detail.trip_id for detail in details if detail.trip_id}
+    return {
+        canonical_id
+        for detail in details
+        if (canonical_id := _canonical_trip_id(detail.trip_id))
+    }
 
 
 def _shares_trip_id(detail: StopDetails, group: list[StopDetails]) -> bool:
-    return bool(detail.trip_id and detail.trip_id in _trip_ids(group))
+    canonical_id = _canonical_trip_id(detail.trip_id)
+    return bool(canonical_id and canonical_id in _trip_ids(group))
 
 
 def _within_duplicate_window(detail: StopDetails, group: list[StopDetails]) -> bool:
@@ -81,11 +90,11 @@ def _group_has_tracking_source(detail: StopDetails, group: list[StopDetails]) ->
 
 def _can_merge_by_time(detail: StopDetails, group: list[StopDetails]) -> bool:
     group_trip_ids = _trip_ids(group)
-    if detail.trip_id and group_trip_ids and detail.trip_id not in group_trip_ids:
+    if _canonical_trip_id(detail.trip_id) or group_trip_ids:
         return False
 
     # Time proximity alone can collapse genuinely frequent service. Only use it
-    # as a fallback when distinct providers report what is probably the same trip.
+    # as a fallback when distinct providers report a trip without identifiers.
     if _group_has_tracking_source(detail, group):
         return False
     if not _has_cross_source_overlap(detail, group):

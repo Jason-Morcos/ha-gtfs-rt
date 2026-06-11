@@ -227,6 +227,91 @@ class RealtimeTests(unittest.TestCase):
 
         self.assertEqual(details, [transit_detail])
 
+    def test_combine_duplicate_departures_merges_numeric_prefixed_trip_ids(self):
+        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        onebusaway_detail = StopDetails(
+            now + dt.timedelta(minutes=6),
+            None,
+            None,
+            60,
+            REALTIME.TRACKING_SOURCE_ONEBUSAWAY,
+            True,
+            "1_694306520",
+        )
+        transit_detail = StopDetails(
+            now + dt.timedelta(minutes=7),
+            None,
+            None,
+            120,
+            REALTIME.TRACKING_SOURCE_TRANSIT_APP,
+            True,
+            "694306520",
+        )
+
+        details = combine_duplicate_departures([onebusaway_detail, transit_detail])
+
+        self.assertEqual(details, [transit_detail])
+
+    def test_combine_duplicate_departures_preserves_close_distinct_trip_ids(self):
+        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        first_onebusaway = StopDetails(
+            now + dt.timedelta(minutes=1),
+            None,
+            "MANY_SEATS_AVAILABLE",
+            469,
+            REALTIME.TRACKING_SOURCE_ONEBUSAWAY,
+            True,
+            "1_694306520",
+        )
+        first_transit = StopDetails(
+            now + dt.timedelta(minutes=1),
+            None,
+            None,
+            482,
+            REALTIME.TRACKING_SOURCE_TRANSIT_APP,
+            True,
+            "694306520",
+        )
+        second_transit = StopDetails(
+            now + dt.timedelta(minutes=1),
+            None,
+            None,
+            -74,
+            REALTIME.TRACKING_SOURCE_TRANSIT_APP,
+            True,
+            "694305960",
+        )
+        second_onebusaway = StopDetails(
+            now + dt.timedelta(minutes=3),
+            None,
+            "EMPTY",
+            -10,
+            REALTIME.TRACKING_SOURCE_ONEBUSAWAY,
+            True,
+            "1_694305960",
+        )
+        third_onebusaway = StopDetails(
+            now + dt.timedelta(minutes=9),
+            None,
+            "EMPTY",
+            74,
+            REALTIME.TRACKING_SOURCE_ONEBUSAWAY,
+            True,
+            "1_694306760",
+        )
+
+        details = combine_duplicate_departures(
+            [
+                first_onebusaway,
+                first_transit,
+                second_transit,
+                second_onebusaway,
+                third_onebusaway,
+            ]
+        )
+
+        self.assertEqual(details, [first_transit, second_transit, third_onebusaway])
+
     def test_combine_duplicate_departures_does_not_chain_distinct_same_source_departures(self):
         now = dt.datetime(2026, 4, 3, 15, 0, 0)
         transit_first = StopDetails(
