@@ -204,6 +204,55 @@ class RealtimeTests(unittest.TestCase):
 
         self.assertEqual(details, [transit_detail, later_detail])
 
+    def test_combine_duplicate_departures_merges_adjacent_rounded_cross_source_times(self):
+        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        onebusaway_detail = StopDetails(
+            now + dt.timedelta(minutes=6, seconds=1),
+            None,
+            None,
+            0,
+            REALTIME.TRACKING_SOURCE_ONEBUSAWAY,
+            True,
+        )
+        transit_detail = StopDetails(
+            now + dt.timedelta(minutes=7, seconds=59),
+            None,
+            None,
+            118,
+            REALTIME.TRACKING_SOURCE_TRANSIT_APP,
+            True,
+        )
+
+        details = combine_duplicate_departures([onebusaway_detail, transit_detail])
+
+        self.assertEqual(details, [transit_detail])
+
+    def test_combine_duplicate_departures_uses_scheduled_time_across_sources(self):
+        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        scheduled_time = now + dt.timedelta(minutes=6)
+        onebusaway_detail = StopDetails(
+            now + dt.timedelta(minutes=5, seconds=30),
+            None,
+            None,
+            -30,
+            REALTIME.TRACKING_SOURCE_ONEBUSAWAY,
+            True,
+            scheduled_time=scheduled_time,
+        )
+        transit_detail = StopDetails(
+            now + dt.timedelta(minutes=8, seconds=10),
+            None,
+            None,
+            130,
+            REALTIME.TRACKING_SOURCE_TRANSIT_APP,
+            True,
+            scheduled_time=scheduled_time,
+        )
+
+        details = combine_duplicate_departures([onebusaway_detail, transit_detail])
+
+        self.assertEqual(details, [transit_detail])
+
     def test_combine_duplicate_departures_keeps_close_same_source_headways(self):
         now = dt.datetime(2026, 4, 3, 15, 0, 0)
         first_detail = StopDetails(

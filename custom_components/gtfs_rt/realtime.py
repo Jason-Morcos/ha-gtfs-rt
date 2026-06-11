@@ -24,9 +24,11 @@ class StopDetails:
     tracking_source: str = TRACKING_SOURCE_GTFS_RT
     is_realtime: bool = True
     trip_id: str | None = None
+    scheduled_time: dt.datetime | None = None
 
 
-DUPLICATE_DEPARTURE_WINDOW = dt.timedelta(seconds=90)
+DUPLICATE_DEPARTURE_WINDOW = dt.timedelta(minutes=2)
+SCHEDULED_DUPLICATE_DEPARTURE_WINDOW = dt.timedelta(seconds=30)
 TRACKING_SOURCE_PRIORITY = {
     TRACKING_SOURCE_SCHEDULE: 0,
     TRACKING_SOURCE_GTFS_RT: 1,
@@ -56,16 +58,36 @@ def _within_duplicate_window(detail: StopDetails, group: list[StopDetails]) -> b
     )
 
 
+def _within_scheduled_duplicate_window(
+    detail: StopDetails, group: list[StopDetails]
+) -> bool:
+    if detail.scheduled_time is None:
+        return False
+    return any(
+        candidate.scheduled_time is not None
+        and abs(detail.scheduled_time - candidate.scheduled_time)
+        <= SCHEDULED_DUPLICATE_DEPARTURE_WINDOW
+        for candidate in group
+    )
+
+
+def _has_cross_source_overlap(detail: StopDetails, group: list[StopDetails]) -> bool:
+    return any(detail.tracking_source != candidate.tracking_source for candidate in group)
+
+
 def _can_merge_by_time(detail: StopDetails, group: list[StopDetails]) -> bool:
     group_trip_ids = _trip_ids(group)
     if detail.trip_id and group_trip_ids and detail.trip_id not in group_trip_ids:
         return False
-    if not _within_duplicate_window(detail, group):
-        return False
 
     # Time proximity alone can collapse genuinely frequent service. Only use it
     # as a fallback when distinct providers report what is probably the same trip.
-    return any(detail.tracking_source != candidate.tracking_source for candidate in group)
+    if not _has_cross_source_overlap(detail, group):
+        return False
+
+    if _within_scheduled_duplicate_window(detail, group):
+        return True
+    return _within_duplicate_window(detail, group)
 
 
 def _departure_quality(detail: StopDetails):
@@ -163,6 +185,9 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
         tracking_source=TRACKING_SOURCE_ONEBUSAWAY if is_realtime else TRACKING_SOURCE_SCHEDULE,
         is_realtime=is_realtime,
         trip_id=_string_or_none(item.get("tripId") or trip_status.get("activeTripId")),
+        scheduled_time=(
+            dt.datetime.fromtimestamp(scheduled_ms / 1000) if scheduled_ms else None
+        ),
     )
 
 
@@ -209,6 +234,11 @@ def build_transit_app_stop_details(item: dict) -> StopDetails | None:
             item.get("rt_trip_id")
             or item.get("trip_id")
             or item.get("trip_search_key")
+        ),
+        scheduled_time=(
+            dt.datetime.fromtimestamp(scheduled_time)
+            if isinstance(scheduled_time, int)
+            else None
         ),
     )
 
