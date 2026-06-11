@@ -75,6 +75,10 @@ def _has_cross_source_overlap(detail: StopDetails, group: list[StopDetails]) -> 
     return any(detail.tracking_source != candidate.tracking_source for candidate in group)
 
 
+def _group_has_tracking_source(detail: StopDetails, group: list[StopDetails]) -> bool:
+    return any(detail.tracking_source == candidate.tracking_source for candidate in group)
+
+
 def _can_merge_by_time(detail: StopDetails, group: list[StopDetails]) -> bool:
     group_trip_ids = _trip_ids(group)
     if detail.trip_id and group_trip_ids and detail.trip_id not in group_trip_ids:
@@ -82,6 +86,8 @@ def _can_merge_by_time(detail: StopDetails, group: list[StopDetails]) -> bool:
 
     # Time proximity alone can collapse genuinely frequent service. Only use it
     # as a fallback when distinct providers report what is probably the same trip.
+    if _group_has_tracking_source(detail, group):
+        return False
     if not _has_cross_source_overlap(detail, group):
         return False
 

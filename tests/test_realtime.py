@@ -227,6 +227,39 @@ class RealtimeTests(unittest.TestCase):
 
         self.assertEqual(details, [transit_detail])
 
+    def test_combine_duplicate_departures_does_not_chain_distinct_same_source_departures(self):
+        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        transit_first = StopDetails(
+            now + dt.timedelta(minutes=6),
+            None,
+            None,
+            0,
+            REALTIME.TRACKING_SOURCE_TRANSIT_APP,
+            True,
+        )
+        onebusaway_duplicate = StopDetails(
+            now + dt.timedelta(minutes=7),
+            None,
+            None,
+            60,
+            REALTIME.TRACKING_SOURCE_ONEBUSAWAY,
+            True,
+        )
+        transit_second = StopDetails(
+            now + dt.timedelta(minutes=8),
+            None,
+            None,
+            0,
+            REALTIME.TRACKING_SOURCE_TRANSIT_APP,
+            True,
+        )
+
+        details = combine_duplicate_departures(
+            [transit_first, onebusaway_duplicate, transit_second]
+        )
+
+        self.assertEqual(details, [transit_first, transit_second])
+
     def test_combine_duplicate_departures_uses_scheduled_time_across_sources(self):
         now = dt.datetime(2026, 4, 3, 15, 0, 0)
         scheduled_time = now + dt.timedelta(minutes=6)
