@@ -8,7 +8,7 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import Platform
 
-from .config import FEED_CONFIG_SCHEMA, normalize_feed_config
+from .config import FEED_CONFIG_SCHEMA, can_remove_route_device, normalize_feed_config
 from .const import CONF_FEED_ID, DOMAIN
 
 PLATFORMS = [Platform.SENSOR]
@@ -72,3 +72,8 @@ async def async_unload_entry(hass, entry):
     if unload_ok:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unload_ok
+
+
+async def async_remove_config_entry_device(hass, config_entry, device_entry):
+    """Allow Home Assistant to remove route devices no longer in the feed config."""
+    return can_remove_route_device(config_entry.data, device_entry.identifiers)

@@ -84,6 +84,45 @@ class ConfigTests(unittest.TestCase):
             },
         )
 
+    def test_removed_route_device_can_be_removed(self):
+        config = {
+            "feed_id": "gtfs_example",
+            "departures": [{"route": "route-72"}],
+        }
+
+        self.assertTrue(
+            config_module.can_remove_route_device(
+                config,
+                {("gtfs_rt", "gtfs_example:route:route-372")},
+            )
+        )
+
+    def test_configured_route_device_cannot_be_removed(self):
+        config = {
+            "feed_id": "gtfs_example",
+            "departures": [{"route": "route-72"}],
+        }
+
+        self.assertFalse(
+            config_module.can_remove_route_device(
+                config,
+                {("gtfs_rt", "gtfs_example:route:route-72")},
+            )
+        )
+
+    def test_unrelated_device_cannot_be_removed(self):
+        config = {
+            "feed_id": "gtfs_example",
+            "departures": [{"route": "route-72"}],
+        }
+
+        self.assertFalse(
+            config_module.can_remove_route_device(
+                config,
+                {("gtfs_rt", "another_feed:route:route-372")},
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

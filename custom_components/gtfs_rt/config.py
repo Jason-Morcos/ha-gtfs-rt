@@ -28,6 +28,7 @@ from .const import (
     CONF_X_API_KEY,
     DEFAULT_NAME,
     DEFAULT_TITLE,
+    DOMAIN,
 )
 
 DEPARTURE_SCHEMA = {
@@ -108,6 +109,28 @@ def derive_departure_unique_id(feed_id: str, departure: dict) -> str:
     return hashlib.sha1(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def can_remove_route_device(config: dict, identifiers) -> bool:
+    """Return whether a device belongs only to a route removed from this feed."""
+    feed_id = str(config.get(CONF_FEED_ID) or "")
+    if not feed_id:
+        return False
+
+    route_prefix = f"{feed_id}:route:"
+    device_route_identifiers = {
+        (domain, identifier)
+        for domain, identifier in identifiers
+        if domain == DOMAIN and str(identifier).startswith(route_prefix)
+    }
+    if not device_route_identifiers:
+        return False
+
+    configured_route_identifiers = {
+        (DOMAIN, f"{route_prefix}{departure[CONF_ROUTE]}")
+        for departure in config.get(CONF_DEPARTURES, [])
+    }
+    return device_route_identifiers.isdisjoint(configured_route_identifiers)
 
 
 def normalize_feed_config(config: dict) -> dict:

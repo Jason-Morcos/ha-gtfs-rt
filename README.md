@@ -133,6 +133,8 @@ Each sensor also exposes `Upcoming departures`, a list of up to five upcoming tr
 
 When the feed is configured under the top-level `gtfs_rt:` key, the integration imports it into a Home Assistant config entry. That allows each route to appear as its own service device, so a line like `372` can group all of your chosen stops under a single device.
 
+When every departure for a route is removed from that feed configuration, the now-empty route device can be deleted from Home Assistant's device registry. Active route devices remain protected from removal.
+
 If both `trip_update_url` and `stop_arrivals_url_template` are configured, the stop-level arrivals endpoint is used as the primary realtime source and the trip-update feed remains available as a compatibility fallback in the configuration.
 
 If `transit_api_key` and `transit_global_stop_id` are configured, Transit app stop departures are preferred for those mapped departures. If Transit app refresh fails or is rate limited, the integration keeps using cached Transit data when available and otherwise falls back to the stop-arrivals / GTFS-RT sources.
