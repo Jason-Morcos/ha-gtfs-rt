@@ -120,6 +120,10 @@ When `static_schedule_url` is configured, each sensor also adds:
 - `Next scheduled departure`
 - `Problem reason`
 
+Schedule validation accepts either `calendar.txt` or `calendar_dates.txt` (or both), uses the feed's `agency_timezone`, and includes previous service days for times after `24:00:00`. When an older feed omits `agency.txt`, validation falls back to Home Assistant's configured timezone. Failed static-feed refreshes report `schedule_lookup_failed` and retry after five minutes; they do not replace the last complete schedule with a partially parsed archive.
+
+Realtime timestamps are compared as UTC instants and displayed in Home Assistant's configured timezone, including across daylight-saving transitions. Canceled GTFS-RT trips, deleted feed entities, skipped stops, and stops marked `NO_DATA` do not create predictions. Expired predictions are omitted between feed refreshes. Missing occupancy and delay stay unknown; an explicitly reported zero delay remains zero.
+
 Each sensor also exposes `Upcoming departures`, a list of up to five upcoming trips with:
 
 - `due_at`
@@ -173,3 +177,17 @@ logger:
    * You can paste your log file at pastebin https://pastebin.com/ and submit a link.
    * Please include details about your setup (Pi, NUC, etc, docker?, HASSOS?)
    * The log file can also be found at `/<config_dir>/home-assistant.log`
+
+
+## Development checks
+
+The integration and its regression tests must work for arbitrary agencies and Home Assistant installations. Keep personal route choices, credentials, display layouts, and household policy in the consuming configuration rather than this repository. Use synthetic agency data for new tests.
+
+Run the standalone tests with the pinned GTFS bindings installed (the suite stubs Home Assistant's entity APIs):
+
+```sh
+python -m pip install gtfs-realtime-bindings==2.0.0 requests voluptuous
+python -m unittest discover -s tests
+```
+
+These tests validate parsing, configuration, and sensor behavior; they do not establish that a particular live provider or physical display is healthy.

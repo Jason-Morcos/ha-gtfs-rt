@@ -123,7 +123,7 @@ RealtimePosition = realtime_module.RealtimePosition
 
 class SensorUpdateTests(unittest.TestCase):
     def test_sensor_exposes_upcoming_departures_attribute(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         next_buses = [
             StopDetails(
@@ -188,7 +188,7 @@ class SensorUpdateTests(unittest.TestCase):
         )
 
     def test_transit_app_departures_merge_with_fallback_data(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -263,7 +263,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertIsNone(data.last_trip_update_error)
 
     def test_transit_app_departures_dedupe_fallback_departures(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -331,7 +331,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(departures[0].trip_id, "trip-1")
 
     def test_transit_app_failure_keeps_fallback_data(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -360,7 +360,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertIsNone(data.last_trip_update_error)
 
     def test_transit_app_batches_stop_ids_at_documented_limit(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         monitored_departures = [
             (f"route-{index}", f"stop-{index}")
@@ -412,7 +412,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(request_params[0]["should_update_realtime"], "true")
 
     def test_transit_app_refresh_interval_reuses_cached_data(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -478,7 +478,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(data.info, {"100214": {"1234": ["departure"]}})
 
     def test_rate_limited_stop_arrivals_reuse_cached_data(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -511,7 +511,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(data._stop_arrivals_backoff_until, now + dt.timedelta(seconds=120))
 
     def test_rate_limit_backoff_skips_network_requests(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -539,7 +539,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertIsNone(data.last_trip_update_error)
 
     def test_rate_limit_backoff_with_empty_cached_lists_falls_back_to_trip_updates(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -570,7 +570,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertIsNone(data.last_trip_update_error)
 
     def test_stop_arrivals_dedupes_requests_for_shared_stops(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -633,7 +633,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(data.info["100225"]["1234"][0].arrival_time, now + dt.timedelta(minutes=8))
 
     def test_bootstrapped_stop_arrivals_refresh_one_stop_per_update(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",
@@ -683,7 +683,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(data._stop_arrivals_last_refresh["5678"], now)
 
     def test_rate_limit_keeps_successful_partial_stop_arrivals_cache(self):
-        now = dt.datetime(2026, 4, 3, 16, 0, 0)
+        now = dt.datetime(2026, 4, 3, 16, 0, 0, tzinfo=dt.timezone.utc)
         dt_mod.now = lambda: now
         data = PublicTransportData(
             trip_update_url="https://example.com/tripupdates.pb",

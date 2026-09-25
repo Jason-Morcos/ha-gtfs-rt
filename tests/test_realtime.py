@@ -28,7 +28,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertFalse(route_id_matches("100214", "1_100341"))
 
     def test_filter_onebusaway_arrivals_uses_future_scheduled_or_predicted_times(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 22, 0, 0, tzinfo=dt.timezone.utc)
         arrivals = [
             {
                 "routeId": "1_100214",
@@ -65,19 +65,19 @@ class RealtimeTests(unittest.TestCase):
         details = filter_onebusaway_arrivals(arrivals, "100214", now)
 
         self.assertEqual(len(details), 2)
-        self.assertEqual(details[0].arrival_time, dt.datetime.fromtimestamp(1775258100))
+        self.assertEqual(details[0].arrival_time, dt.datetime.fromtimestamp(1775258100, dt.timezone.utc))
         self.assertEqual(details[0].delay, 60)
         self.assertEqual(details[0].position.latitude, 47.0)
         self.assertEqual(details[0].tracking_source, REALTIME.TRACKING_SOURCE_ONEBUSAWAY)
         self.assertTrue(details[0].is_realtime)
         self.assertEqual(details[0].trip_id, "AGENCY_trip-1")
-        self.assertEqual(details[1].arrival_time, dt.datetime.fromtimestamp(1775259000))
+        self.assertEqual(details[1].arrival_time, dt.datetime.fromtimestamp(1775259000, dt.timezone.utc))
         self.assertIsNone(details[1].delay)
         self.assertEqual(details[1].tracking_source, REALTIME.TRACKING_SOURCE_SCHEDULE)
         self.assertFalse(details[1].is_realtime)
 
     def test_filter_transit_app_departures_uses_realtime_source_metadata(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         departures = [
             {
                 "global_stop_id": "AGENCY:1234",
@@ -142,7 +142,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertFalse(details[1].is_realtime)
 
     def test_filter_transit_app_departures_reads_v4_merged_itineraries(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         departures = [
             {
                 "global_stop_id": "AGENCY:1234",
@@ -174,7 +174,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details[0].trip_id, "trip-v4")
 
     def test_combine_duplicate_departures_prefers_better_cross_source_detail(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         schedule_detail = StopDetails(
             now + dt.timedelta(seconds=20),
             None,
@@ -205,7 +205,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details, [transit_detail, later_detail])
 
     def test_combine_duplicate_departures_merges_adjacent_rounded_cross_source_times(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         onebusaway_detail = StopDetails(
             now + dt.timedelta(minutes=6, seconds=1),
             None,
@@ -228,7 +228,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details, [transit_detail])
 
     def test_combine_duplicate_departures_merges_numeric_prefixed_trip_ids(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         onebusaway_detail = StopDetails(
             now + dt.timedelta(minutes=6),
             None,
@@ -253,7 +253,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details, [transit_detail])
 
     def test_combine_duplicate_departures_preserves_close_distinct_trip_ids(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         first_onebusaway = StopDetails(
             now + dt.timedelta(minutes=1),
             None,
@@ -313,7 +313,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details, [first_transit, second_transit, third_onebusaway])
 
     def test_combine_duplicate_departures_does_not_chain_distinct_same_source_departures(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         transit_first = StopDetails(
             now + dt.timedelta(minutes=6),
             None,
@@ -346,7 +346,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details, [transit_first, transit_second])
 
     def test_combine_duplicate_departures_uses_scheduled_time_across_sources(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         scheduled_time = now + dt.timedelta(minutes=6)
         onebusaway_detail = StopDetails(
             now + dt.timedelta(minutes=5, seconds=30),
@@ -372,7 +372,7 @@ class RealtimeTests(unittest.TestCase):
         self.assertEqual(details, [transit_detail])
 
     def test_combine_duplicate_departures_keeps_close_same_source_headways(self):
-        now = dt.datetime(2026, 4, 3, 15, 0, 0)
+        now = dt.datetime(2026, 4, 3, 15, 0, 0, tzinfo=dt.timezone.utc)
         first_detail = StopDetails(
             now + dt.timedelta(seconds=20),
             None,
