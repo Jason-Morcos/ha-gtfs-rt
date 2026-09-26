@@ -193,7 +193,7 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
     is_realtime = bool(predicted_ms)
 
     return StopDetails(
-        arrival_time=dt.datetime.fromtimestamp(chosen_ms / 1000),
+        arrival_time=dt.datetime.fromtimestamp(chosen_ms / 1000, dt.timezone.utc),
         position=position,
         occupancy=occupancy or None,
         delay=delay,
@@ -201,7 +201,7 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
         is_realtime=is_realtime,
         trip_id=_string_or_none(item.get("tripId") or trip_status.get("activeTripId")),
         scheduled_time=(
-            dt.datetime.fromtimestamp(scheduled_ms / 1000) if scheduled_ms else None
+            dt.datetime.fromtimestamp(scheduled_ms / 1000, dt.timezone.utc) if scheduled_ms else None
         ),
     )
 
@@ -214,9 +214,14 @@ def filter_onebusaway_arrivals(
     """Select and sort future arrivals for the configured route."""
     matches: list[StopDetails] = []
     for item in arrivals:
+        if not isinstance(item, dict):
+            continue
         if not route_id_matches(configured_route, item.get("routeId")):
             continue
-        details = build_onebusaway_stop_details(item)
+        try:
+            details = build_onebusaway_stop_details(item)
+        except (TypeError, ValueError, OverflowError, OSError):
+            continue
         if details is None or details.arrival_time <= now:
             continue
         matches.append(details)
@@ -239,7 +244,7 @@ def build_transit_app_stop_details(item: dict) -> StopDetails | None:
     occupancy = item.get("occupancy") or item.get("occupancy_status") or None
 
     return StopDetails(
-        arrival_time=dt.datetime.fromtimestamp(departure_time),
+        arrival_time=dt.datetime.fromtimestamp(departure_time, dt.timezone.utc),
         position=None,
         occupancy=occupancy,
         delay=delay,
@@ -251,7 +256,7 @@ def build_transit_app_stop_details(item: dict) -> StopDetails | None:
             or item.get("trip_search_key")
         ),
         scheduled_time=(
-            dt.datetime.fromtimestamp(scheduled_time)
+            dt.datetime.fromtimestamp(scheduled_time, dt.timezone.utc)
             if isinstance(scheduled_time, int)
             else None
         ),
@@ -278,6 +283,8 @@ def filter_transit_app_departures(
     """Select and sort future Transit app departures for a stop/route."""
     matches: list[StopDetails] = []
     for route_entry in route_departures:
+        if not isinstance(route_entry, dict):
+            continue
         if str(route_entry.get("global_stop_id") or "") != str(global_stop_id):
             continue
         if not transit_route_matches(configured_route, route_entry):
@@ -291,7 +298,10 @@ def filter_transit_app_departures(
             for item in itinerary.get("schedule_items") or []:
                 if not isinstance(item, dict) or item.get("is_cancelled"):
                     continue
-                details = build_transit_app_stop_details(item)
+                try:
+                    details = build_transit_app_stop_details(item)
+                except (TypeError, ValueError, OverflowError, OSError):
+                    continue
                 if details is None or details.arrival_time <= now:
                     continue
                 matches.append(details)
