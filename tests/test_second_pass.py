@@ -234,7 +234,13 @@ class MalformedProviderTests(unittest.TestCase):
             ):
                 positions, trips, occupancy = data._get_vehicle_positions()
             self.assertEqual(positions, {})
-            self.assertIsNone(trips.for_trip(row.trip).position)
+            if lon is None:
+                # A partially populated Position violates required protobuf
+                # fields; reject that sidecar feed without inventing a vehicle.
+                self.assertEqual(trips, {})
+                self.assertIsNotNone(data.vehicle_feed_error)
+            else:
+                self.assertIsNone(trips.for_trip(row.trip).position)
 
     def test_partial_stop_cache_preserves_failed_pairs_during_backoff(self):
         data = SENSOR.PublicTransportData(

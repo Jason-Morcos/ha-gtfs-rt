@@ -328,3 +328,18 @@ async def test_rotating_url_frees_old_url_without_reusing_feed_identity(hass):
             second["data"]["departures"][0]["unique_id"]
             != original_departure["unique_id"]
         )
+
+
+async def test_native_ui_rejects_headerless_feed_before_creating_entry(hass):
+    malformed = feed()
+    malformed.ClearField("header")
+    with patch("custom_components.gtfs_rt.feed.requests.get", return_value=Mock(content=malformed.SerializePartialToString())):
+        result = await hass.config_entries.flow.async_init(
+            "gtfs_rt", context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"name": "Example", "trip_update_url": URL}
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"trip_update_url": "invalid_feed"}
+    assert not hass.config_entries.async_entries("gtfs_rt")

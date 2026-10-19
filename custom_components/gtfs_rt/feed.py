@@ -63,6 +63,8 @@ def parse_feed(content: bytes) -> gtfs_realtime_pb2.FeedMessage:
             raise InvalidFeedError(_describe(content)) from json_err
     if not feed.HasField("header") and not feed.entity:
         raise InvalidFeedError(_describe(content))
+    if not feed.HasField("header") or not feed.IsInitialized():
+        raise InvalidFeedError("the GTFS-realtime feed is missing required protobuf fields")
     return feed
 
 
@@ -104,6 +106,7 @@ class VehicleIndex(dict):
 
     def __init__(self, feed):
         super().__init__()
+        self._trip_instances = {}
         self._by_trip = {}
         self._by_trip_id = {}
         for entity in feed.entity:
@@ -144,21 +147,44 @@ class VehicleIndex(dict):
             if candidate and candidate[1].vehicle_id:
                 self[trip_id] = candidate[1].vehicle_id
 
+    def set_trip_instances(self, trips):
+        """Bind the current TripUpdates before lending vehicle enrichment."""
+        self._trip_instances = {}
+        for trip in trips:
+            if trip.trip_id:
+                self._trip_instances.setdefault(trip.trip_id, set()).add(trip_key(trip))
+
     def for_trip(self, trip):
         if not trip.trip_id:
             return None
         key = trip_key(trip)
         if key in self._by_trip:
-            return self._by_trip[key]
-        candidate = self._by_trip_id.get(trip.trip_id)
-        if candidate is None:
-            return None
-        observed_key, value = candidate
+            value = self._by_trip[key]
+            if value is None:
+                return None
+            observed_key = key
+        else:
+            candidate = self._by_trip_id.get(trip.trip_id)
+            if candidate is None:
+                return None
+            observed_key, value = candidate
         # A known conflicting service instance cannot lend position or route.
         if any(
             expected and observed and expected != observed
             for expected, observed in zip(key[1:], observed_key[1:])
         ):
+            return None
+        compatible = [
+            instance for instance in self._trip_instances.get(trip.trip_id, ())
+            if not any(
+                expected and observed and expected != observed
+                for expected, observed in zip(instance[1:], observed_key[1:])
+            )
+        ]
+        # One incomplete VehiclePosition is not evidence that several known
+        # frequency/service-day instances share its route, position or occupancy.
+        if any(len({instance[index] for instance in compatible if instance[index]}) > 1
+               for index in (1, 2)):
             return None
         return value
 

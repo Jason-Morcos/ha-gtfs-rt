@@ -2,8 +2,9 @@
 
 import datetime as dt
 import unittest
+from zoneinfo import ZoneInfo
 
-from test_health import StaticScheduleValidator, build_archive
+from test_health import HEALTH, StaticScheduleValidator, build_archive
 
 UTC = dt.timezone.utc
 
@@ -124,6 +125,45 @@ class FrequencyScheduleTests(unittest.TestCase):
         self.assertEqual(
             len(data._frequency_windows_by_service[("R", "S", "service")]), 2
         )
+
+    def test_frequency_service_today_uses_agency_civil_day_after_stop_offset(self):
+        zone = ZoneInfo("Europe/Berlin")
+        friday = dt.datetime(2026, 4, 3, 12, tzinfo=zone)
+        for exact in ("0", "1"):
+            # The second range starts before midnight at the first stop, but
+            # every monitored-stop departure is after midnight due to its offset.
+            for start, end, saturday_hour, saturday_minute in (
+                ("24:00:00", "26:00:00", 1, 0),
+                ("23:55:00", "24:00:00", 0, 5),
+            ):
+                with self.subTest(exact=exact, start=start):
+                    files = schedule(
+                        exact=exact, start=start, end=end, timezone="Europe/Berlin"
+                    )
+                    data = load(files, friday)
+                    before = data.get_status("R", "S", friday)
+                    self.assertFalse(before.service_today)
+                    self.assertFalse(before.service_expected_now)
+                    self.assertEqual(before.status, HEALTH.STATUS_NO_SERVICE_TODAY)
+                    saturday = dt.datetime(
+                        2026, 4, 4, saturday_hour, saturday_minute, tzinfo=zone
+                    )
+                    # UTC is still Friday here; use the agency's civil day.
+                    self.assertEqual(saturday.astimezone(UTC).day, 3)
+                    carried = load(files, saturday).get_status("R", "S", saturday)
+                    self.assertTrue(carried.service_today)
+                    self.assertTrue(carried.service_expected_now)
+                    self.assertEqual(
+                        carried.next_scheduled_departure,
+                        saturday if exact == "1" else None,
+                    )
+                    saturday_noon = saturday.replace(hour=12, minute=0)
+                    finished = load(files, saturday_noon).get_status(
+                        "R", "S", saturday_noon
+                    )
+                    self.assertTrue(finished.service_today)
+                    self.assertFalse(finished.service_expected_now)
+                    self.assertIsNone(finished.next_scheduled_departure)
 
     def test_frequency_carryover_and_calendar_removal(self):
         now = dt.datetime(2026, 4, 4, 1, tzinfo=UTC)

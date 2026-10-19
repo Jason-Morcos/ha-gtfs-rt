@@ -127,3 +127,20 @@ only the scheduled event corresponding to the selected realtime event; missing
 counterpart timestamps remain unknown instead of adding dwell time to delay.
 Both findings have synthetic regressions, including reversed/repeated merge
 orders and both arrival/departure mismatch directions.
+
+
+The next full Codex review at `b74932f` found three additional defects:
+
+- Vehicle enrichment now considers the current TripUpdates as well as vehicle
+  records. A vehicle without enough service-instance metadata cannot supply
+  route, position or occupancy to several known frequency instances.
+- Feed decoding requires the mandatory header and initialized protobuf fields.
+  Valid header-only empty feeds and actionable safe payload errors remain
+  supported; structurally incomplete sidecars fail in isolation from arrivals.
+- `Service today` uses actual agency civil-day overlap for timed departures and
+  both frequency modes. A Friday service-day trip running only after midnight
+  belongs to Saturday's displayed service health. Calendar exceptions, elapsed
+  DST times, carryover, upcoming instants and untimed-calendar health remain.
+
+Regressions include binary/JSON/header-only feed cases, native UI rejection,
+known/unknown frequency vehicle metadata, and service-day versus civil-day cases.

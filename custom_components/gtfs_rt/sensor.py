@@ -751,6 +751,15 @@ class PublicTransportData:
 
         departure_times = {}
         now = dt_util.now().timestamp()
+        if isinstance(vehicles_trips, VehicleIndex):
+            vehicles_trips.set_trip_instances(
+                entity.trip_update.trip for entity in feed.entity
+                if not entity.is_deleted and entity.HasField("trip_update")
+                and entity.trip_update.trip.schedule_relationship not in (
+                    gtfs_realtime_pb2.TripDescriptor.CANCELED,
+                    gtfs_realtime_pb2.TripDescriptor.DELETED,
+                )
+            )
 
         for entity in feed.entity:
             if entity.is_deleted or not entity.HasField("trip_update"):

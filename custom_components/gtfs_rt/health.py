@@ -230,7 +230,7 @@ class StaticScheduleValidator:
             for service_id in self._active_service_ids(service_date):
                 for seconds in self._departures_by_service.get((route_id, stop_id, service_id), []):
                     departure = anchor + dt.timedelta(seconds=seconds)
-                    if offset == 0 or midnight <= departure < tomorrow:
+                    if midnight <= departure < tomorrow:
                         service_today = True
                     current_service_day = offset == 0
                     carries_over = offset < 0 and departure >= midnight - self._active_window_before
@@ -249,7 +249,7 @@ class StaticScheduleValidator:
                             first_in_window is not None and first_in_window <= upper_seconds
                         )
                         first_today = window.next_at_or_after(midnight_seconds)
-                        if offset == 0 or (first_today is not None and first_today < tomorrow_seconds):
+                        if first_today is not None and first_today < tomorrow_seconds:
                             service_today = True
                         upcoming = window.next_at_or_after((now_instant - anchor).total_seconds())
                         if upcoming is not None and (offset <= 0 or upcoming <= upper_seconds):
@@ -262,7 +262,7 @@ class StaticScheduleValidator:
                             window.start_seconds <= upper_seconds
                             and window.end_seconds > lower_seconds
                         )
-                        if offset == 0 or (
+                        if (
                             window.start_seconds < tomorrow_seconds
                             and window.end_seconds > midnight_seconds
                         ):
