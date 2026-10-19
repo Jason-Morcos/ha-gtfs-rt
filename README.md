@@ -22,8 +22,7 @@ under **Settings → Devices & services → Add integration**. Enter the feed UR
 headers, then add one or more named departures. Leave `route` blank to watch all
 routes at a stop. UI feeds support **Reconfigure** for URL/key rotation and
 **Configure** for adding or removing departures. Reconfiguration preserves existing
-feed, device, and entity identities. Optional fields can be cleared by submitting
-an empty value. YAML-imported feeds remain managed in YAML.
+feed, device, and entity identities. Clearing an optional field removes its previous value. YAML-imported feeds remain managed in YAML.
 
 Existing route devices keep grouping configured stops by route. Departures without
 a route share a stop device; adding UI support does not migrate existing devices.
@@ -162,7 +161,11 @@ matches left unknown.
 
 Use the config entry's **Download diagnostics** action to inspect route IDs
 observed at your configured stops. Diagnostics omit headers, Transit credentials,
-and names, and remove URL user information, paths, query strings and fragments.
+and names, and remove URL user information, paths, query strings and fragments. Stop-wide
+sensors report the route IDs observed within provider results as well as per-sensor
+source errors. A fallback serving one configured route does not mask another
+route's failed source; healthy empty primary feeds remain available when an
+optional provider fails.
 
 When every departure for a route is removed from that feed configuration, the now-empty route device can be deleted from Home Assistant's device registry. Active route devices remain protected from removal.
 

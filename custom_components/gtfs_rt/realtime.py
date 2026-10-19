@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+import math
 
 TRACKING_SOURCE_GTFS_RT = "gtfs_rt"
 TRACKING_SOURCE_ONEBUSAWAY = "onebusaway"
@@ -19,7 +20,7 @@ class RealtimePosition:
 class StopDetails:
     arrival_time: dt.datetime
     position: RealtimePosition | None
-    occupancy: str | None
+    occupancy: str | int | None
     delay: int | None
     tracking_source: str = TRACKING_SOURCE_GTFS_RT
     is_realtime: bool = True
@@ -28,6 +29,9 @@ class StopDetails:
     trip_start_date: str | None = None
     trip_start_time: str | None = None
     route_id: str | None = None
+    # Keep original reports when a preferred provider omits service-instance
+    # metadata. Later cache/stop-wide merges must retain the same evidence.
+    _reports: tuple[StopDetails, ...] = field(default=(), compare=False, repr=False)
 
 
 DUPLICATE_DEPARTURE_WINDOW = dt.timedelta(minutes=2)
@@ -58,21 +62,25 @@ def _trip_ids(details: list[StopDetails]) -> set[str]:
     }
 
 
-def _shares_trip_id(detail, group, ambiguous_trip_ids, match_routes=False):
+def _shares_trip_id(detail, group, ambiguities, match_routes=False):
     canonical_id = _canonical_trip_id(detail.trip_id)
     if not canonical_id:
         return False
+    candidates = [
+        item for item in group if _canonical_trip_id(item.trip_id) == canonical_id
+    ]
+    if not candidates:
+        return False
+    ambiguous_instances, ambiguous_aliases = ambiguities
     instance = (detail.trip_start_date, detail.trip_start_time)
-    for candidate in group:
-        if canonical_id != _canonical_trip_id(candidate.trip_id):
-            continue
+    for candidate in candidates:
+        # Every report in a group must agree. A third provider's unprefixed ID
+        # cannot bridge two distinct IDs from one feed or two known agencies.
         if detail.tracking_source == candidate.tracking_source:
-            # Prefix normalization is a cross-provider compatibility rule, never
-            # permission to collapse distinct IDs reported by the same feed.
             if detail.trip_id != candidate.trip_id:
-                continue
+                return False
             if match_routes and detail.route_id != candidate.route_id:
-                continue
+                return False
         elif has_numeric_prefix(detail.trip_id) and has_numeric_prefix(
             candidate.trip_id
         ):
@@ -80,22 +88,21 @@ def _shares_trip_id(detail, group, ambiguous_trip_ids, match_routes=False):
                 str(detail.trip_id).partition("_")[0]
                 != str(candidate.trip_id).partition("_")[0]
             ):
-                continue
+                return False
         other = (candidate.trip_start_date, candidate.trip_start_time)
         if any(
             left and right and left != right for left, right in zip(instance, other)
         ):
-            continue
-        # A provider that omits instance metadata can join one known instance,
-        # but must not be guessed into one of several frequency runs.
-        if canonical_id in ambiguous_trip_ids and instance != other:
-            continue
-        return True
-    return False
+            return False
+        if canonical_id in ambiguous_instances and instance != other:
+            return False
+        if canonical_id in ambiguous_aliases and detail.trip_id != candidate.trip_id:
+            return False
+    return True
 
 
-def _ambiguous_trip_ids(details):
-    dates, times = {}, {}
+def _trip_ambiguities(details):
+    dates, times, prefixes, source_ids = {}, {}, {}, {}
     for detail in details:
         canonical = _canonical_trip_id(detail.trip_id)
         if not canonical:
@@ -104,16 +111,28 @@ def _ambiguous_trip_ids(details):
             dates.setdefault(canonical, set()).add(detail.trip_start_date)
         if detail.trip_start_time:
             times.setdefault(canonical, set()).add(detail.trip_start_time)
-    return {
+        if has_numeric_prefix(detail.trip_id):
+            prefixes.setdefault(canonical, set()).add(
+                str(detail.trip_id).partition("_")[0]
+            )
+        source_ids.setdefault((canonical, detail.tracking_source), set()).add(
+            detail.trip_id
+        )
+    instances = {
         key
-        for values in (dates, times)
-        for key, instances in values.items()
-        if len(instances) > 1
+        for index in (dates, times)
+        for key, values in index.items()
+        if len(values) > 1
     }
+    aliases = {key for key, values in prefixes.items() if len(values) > 1}
+    aliases.update(
+        key for (key, _source), values in source_ids.items() if len(values) > 1
+    )
+    return instances, aliases
 
 
 def _within_duplicate_window(detail: StopDetails, group: list[StopDetails]) -> bool:
-    return any(
+    return all(
         abs(detail.arrival_time - candidate.arrival_time) <= DUPLICATE_DEPARTURE_WINDOW
         for candidate in group
     )
@@ -124,11 +143,14 @@ def _within_scheduled_duplicate_window(
 ) -> bool:
     if detail.scheduled_time is None:
         return False
-    return any(
-        candidate.scheduled_time is not None
-        and abs(detail.scheduled_time - candidate.scheduled_time)
-        <= SCHEDULED_DUPLICATE_DEPARTURE_WINDOW
+    known = [
+        candidate.scheduled_time
         for candidate in group
+        if candidate.scheduled_time is not None
+    ]
+    return bool(known) and all(
+        abs(detail.scheduled_time - when) <= SCHEDULED_DUPLICATE_DEPARTURE_WINDOW
+        for when in known
     )
 
 
@@ -154,7 +176,13 @@ def _can_merge_by_time(
     # Time proximity alone can collapse genuinely frequent service. Only use it
     # as a fallback when distinct providers report a trip without identifiers.
     if match_routes and any(
-        not detail.route_id
+        (
+            has_numeric_prefix(detail.route_id)
+            and has_numeric_prefix(candidate.route_id)
+            and str(detail.route_id).partition("_")[0]
+            != str(candidate.route_id).partition("_")[0]
+        )
+        or not detail.route_id
         or not candidate.route_id
         or normalize_prefixed_id(detail.route_id)
         != normalize_prefixed_id(candidate.route_id)
@@ -185,13 +213,18 @@ def combine_duplicate_departures(
     details: list[StopDetails], *, match_routes=False
 ) -> list[StopDetails]:
     """Combine duplicate departures reported by multiple realtime sources."""
+    observations = []
+    for detail in details:
+        for report in detail._reports or (detail,):
+            if report not in observations:
+                observations.append(report)
     groups: list[list[StopDetails]] = []
-    ambiguous_trip_ids = _ambiguous_trip_ids(details)
-    for detail in sorted(details, key=lambda item: item.arrival_time):
+    ambiguities = _trip_ambiguities(observations)
+    for detail in sorted(observations, key=lambda item: item.arrival_time):
         for group in groups:
             if (
                 detail in group
-                or _shares_trip_id(detail, group, ambiguous_trip_ids, match_routes)
+                or _shares_trip_id(detail, group, ambiguities, match_routes)
                 or _can_merge_by_time(detail, group, match_routes)
             ):
                 group.append(detail)
@@ -199,7 +232,10 @@ def combine_duplicate_departures(
         else:
             groups.append([detail])
 
-    combined = [max(group, key=_departure_quality) for group in groups]
+    combined = [
+        replace(max(group, key=_departure_quality), _reports=tuple(group))
+        for group in groups
+    ]
     combined.sort(key=lambda item: item.arrival_time)
     return combined
 
@@ -242,6 +278,47 @@ def route_id_matches(configured_route: str, observed_route: str | None) -> bool:
     return configured == normalized_observed
 
 
+def valid_position(latitude, longitude):
+    """Accept only an explicitly supplied finite geographic coordinate pair."""
+    if (
+        latitude is None
+        or longitude is None
+        or isinstance(latitude, bool)
+        or isinstance(longitude, bool)
+    ):
+        return None
+    try:
+        latitude, longitude = float(latitude), float(longitude)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if not math.isfinite(latitude) or not math.isfinite(longitude):
+        return None
+    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        return None
+    return RealtimePosition(latitude, longitude)
+
+
+def _mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value):
+    return value if isinstance(value, list) else []
+
+
+def _occupancy(*values):
+    return next(
+        (
+            value
+            for value in values
+            if isinstance(value, (str, int))
+            and not isinstance(value, bool)
+            and value != ""
+        ),
+        None,
+    )
+
+
 def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
     """Convert an OBA arrival row into StopDetails."""
     predicted_ms = int(
@@ -254,21 +331,15 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
     if chosen_ms <= 0:
         return None
 
-    trip_status = item.get("tripStatus") or {}
-    position_data = (
-        trip_status.get("position") or trip_status.get("lastKnownLocation") or {}
+    trip_status = _mapping(item.get("tripStatus"))
+    position_data = _mapping(trip_status.get("position")) or _mapping(
+        trip_status.get("lastKnownLocation")
     )
-    position = None
-    lat = position_data.get("lat")
-    lon = position_data.get("lon")
-    if lat is not None and lon is not None:
-        position = RealtimePosition(latitude=float(lat), longitude=float(lon))
-
-    occupancy = (
-        item.get("predictedOccupancy")
-        or item.get("occupancyStatus")
-        or trip_status.get("occupancyStatus")
-        or None
+    position = valid_position(position_data.get("lat"), position_data.get("lon"))
+    occupancy = _occupancy(
+        item.get("predictedOccupancy"),
+        item.get("occupancyStatus"),
+        trip_status.get("occupancyStatus"),
     )
     delay = (
         int((predicted_ms - scheduled_ms) / 1000)
@@ -280,7 +351,7 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
     return StopDetails(
         arrival_time=dt.datetime.fromtimestamp(chosen_ms / 1000, dt.timezone.utc),
         position=position,
-        occupancy=occupancy or None,
+        occupancy=occupancy,
         delay=delay,
         tracking_source=TRACKING_SOURCE_ONEBUSAWAY
         if is_realtime
@@ -303,7 +374,7 @@ def filter_onebusaway_arrivals(
 ) -> list[StopDetails]:
     """Select and sort future arrivals for the configured route."""
     matches: list[StopDetails] = []
-    for item in arrivals:
+    for item in _list(arrivals):
         if not isinstance(item, dict):
             continue
         if not route_id_matches(configured_route, item.get("routeId")):
@@ -331,7 +402,7 @@ def build_transit_app_stop_details(item: dict) -> StopDetails | None:
     if isinstance(scheduled_time, int):
         delay = departure_time - scheduled_time
 
-    occupancy = item.get("occupancy") or item.get("occupancy_status") or None
+    occupancy = _occupancy(item.get("occupancy"), item.get("occupancy_status"))
 
     return StopDetails(
         arrival_time=dt.datetime.fromtimestamp(departure_time, dt.timezone.utc),
@@ -374,7 +445,7 @@ def filter_transit_app_departures(
 ) -> list[StopDetails]:
     """Select and sort future Transit app departures for a stop/route."""
     matches: list[StopDetails] = []
-    for route_entry in route_departures:
+    for route_entry in _list(route_departures):
         if not isinstance(route_entry, dict):
             continue
         if str(route_entry.get("global_stop_id") or "") != str(global_stop_id):
@@ -382,12 +453,14 @@ def filter_transit_app_departures(
         if not transit_route_matches(configured_route, route_entry):
             continue
 
-        itineraries = list(route_entry.get("itineraries") or [])
-        itineraries.extend(route_entry.get("merged_itineraries") or [])
+        itineraries = [
+            *_list(route_entry.get("itineraries")),
+            *_list(route_entry.get("merged_itineraries")),
+        ]
         for itinerary in itineraries:
             if not isinstance(itinerary, dict):
                 continue
-            for item in itinerary.get("schedule_items") or []:
+            for item in _list(itinerary.get("schedule_items")):
                 if not isinstance(item, dict) or item.get("is_cancelled"):
                     continue
                 try:

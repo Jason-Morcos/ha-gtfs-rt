@@ -53,6 +53,7 @@
     },
     "abort": {
       "already_configured": "This trip updates URL is already configured.",
+      "duplicate_departure": "A departure entity unique ID is already used by this or another feed. Give each departure a distinct unique ID.",
       "yaml_only": "This integration is configured from YAML via the gtfs_rt section.",
       "yaml_managed": "This feed is managed by YAML. Edit the gtfs_rt configuration to change it.",
       "reconfigure_successful": "Feed configuration updated."

@@ -45,3 +45,34 @@ The review and automated tests establish source behavior only. PR publication,
 review/merge, release packaging, HACS installation, loaded runtime and live agency
 behavior are separate boundaries. This change does not release or install a new
 version.
+
+## Second-pass interaction review
+
+The follow-up review reproduced and corrected additional interactions:
+
+- Keep original provider reports internally across cache/stop-wide merges.
+  Otherwise a preferred provider without frequency metadata can erase that
+  evidence, or an unprefixed ID can bridge distinct agencies. All reports in a
+  duplicate group must agree; time-only groups cannot chain past their window.
+  Re-expanded reports are checked for expiry again before sensors/caches use them.
+- Treat cleared optional form fields as removed, including values omitted by the
+  Home Assistant frontend. Verify actual URL/header reloads while preserving IDs.
+- Prevent YAML imports from taking over UI-owned feeds or reusing another feed's
+  entity IDs, while preserving intentional distinct YAML namespaces for one URL
+  and normal migration of this integration's unowned legacy registry identities.
+- Evaluate primary failure and fallback coverage for each configured departure.
+  Preserve known failures for uncovered routes during partial Transit fallback
+  or OneBusAway backoff. API-level failures retain successful earlier stop results. A healthy empty primary feed is not broken by an optional
+  provider outage; a freshly successful empty mapped fallback remains healthy.
+- Validate JSON envelopes and nested optional provider structures independently.
+  Malformed optional metadata cannot discard neighboring healthy predictions.
+  Missing, nonfinite or out-of-range positions stay unknown; explicit zero
+  occupancy remains present.
+- Collect observed route IDs inside all-routes provider buckets for diagnostics,
+  deduplicate repeated reports in counts, and expose scoped source failures.
+
+Regression coverage is in `tests/test_second_pass.py`,
+`tests_ha/test_lifecycle_regressions.py`, and
+`tests_ha/test_provider_regressions.py`. All fixtures are synthetic. This evidence
+remains source/test evidence; release, installation and live provider verification
+remain separate.

@@ -269,7 +269,7 @@ def isolated_checks():
             )
             self.assertEqual(result["errors"]["base"], "duplicate_departure")
 
-        async def test_reconfigure_preserves_identity_and_omitted_fields(self):
+        async def test_reconfigure_preserves_identity_and_submitted_fields(self):
             entry = self.entry()
             old = dict(entry.data)
             result = await self.flow.async_step_reconfigure()
@@ -281,6 +281,8 @@ def isolated_checks():
                     "name": "New",
                     "trip_update_url": "https://example.org/new",
                     "static_schedule_url": "",
+                    "headers": old["headers"],
+                    "transit_api_key": old["transit_api_key"],
                 }
             )
             self.assertEqual(result["reason"], "reconfigure_successful")

@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = ROOT / "custom_components" / "gtfs_rt"
@@ -30,6 +31,7 @@ config_entries = types.ModuleType("homeassistant.config_entries")
 config_entries.ConfigFlow = FakeConfigFlow
 config_entries.OptionsFlow = FakeConfigFlow
 config_entries.ConfigEntryState = FakeConfigEntryState
+config_entries.SOURCE_IMPORT = "import"
 const = types.ModuleType("homeassistant.const")
 const.CONF_NAME = "name"
 homeassistant.config_entries = config_entries
@@ -97,18 +99,31 @@ class FakeConfigEntriesManager:
 
 
 class ConfigFlowImportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # These focused tests isolate import update/reload behavior; native HA
+        # tests exercise entity-registry collision checks with real entries.
+        checker = patch.object(MODULE, "_departure_id_errors", return_value={})
+        checker.start()
+        self.addCleanup(checker.stop)
+
     async def test_import_updates_not_loaded_entry_without_reloading(self):
         entry = types.SimpleNamespace(
             data={"feed_id": "feed-1", "name": "Old"},
             title="Old",
             entry_id="entry-1",
             state=FakeConfigEntryState.NOT_LOADED,
+            source="import",
         )
         manager = FakeConfigEntriesManager([entry])
         flow = MODULE.GTFSRtConfigFlow()
         flow.hass = types.SimpleNamespace(config_entries=manager)
 
-        result = await flow.async_step_import({"feed_id": "feed-1", "name": "New"})
+        result = await flow.async_step_import(
+            {
+                "feed_id": "feed-1", "name": "New",
+                "trip_update_url": "https://example.org/trips", "departures": [],
+            }
+        )
 
         self.assertEqual(result, {"type": "abort", "reason": "already_configured"})
         self.assertEqual(len(manager.updated), 1)
@@ -120,12 +135,18 @@ class ConfigFlowImportTests(unittest.IsolatedAsyncioTestCase):
             title="Old",
             entry_id="entry-1",
             state=FakeConfigEntryState.LOADED,
+            source="import",
         )
         manager = FakeConfigEntriesManager([entry])
         flow = MODULE.GTFSRtConfigFlow()
         flow.hass = types.SimpleNamespace(config_entries=manager)
 
-        result = await flow.async_step_import({"feed_id": "feed-1", "name": "New"})
+        result = await flow.async_step_import(
+            {
+                "feed_id": "feed-1", "name": "New",
+                "trip_update_url": "https://example.org/trips", "departures": [],
+            }
+        )
 
         self.assertEqual(result, {"type": "abort", "reason": "already_configured"})
         self.assertEqual(len(manager.updated), 1)

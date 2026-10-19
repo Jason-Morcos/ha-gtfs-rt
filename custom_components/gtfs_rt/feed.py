@@ -10,6 +10,7 @@ from google.protobuf.message import DecodeError
 from google.transit import gtfs_realtime_pb2
 
 from .const import REQUEST_TIMEOUT
+from .realtime import valid_position
 
 ACCEPT = "application/x-protobuf, application/octet-stream;q=0.9, */*;q=0.8"
 
@@ -120,7 +121,14 @@ class VehicleIndex(dict):
             value = VehicleDetails(
                 row.vehicle.id or None,
                 row.trip.route_id,
-                row.position if row.HasField("position") else None,
+                valid_position(
+                    row.position.latitude
+                    if row.position.HasField("latitude")
+                    else None,
+                    row.position.longitude
+                    if row.position.HasField("longitude")
+                    else None,
+                ),
                 occupancy,
             )
             if not row.trip.trip_id:

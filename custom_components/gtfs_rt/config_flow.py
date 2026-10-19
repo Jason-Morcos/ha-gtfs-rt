@@ -88,7 +88,7 @@ def _departure_errors(departure, departures):
     return {}
 
 
-def _departure_id_errors(hass, feed, departures, excluded=None):
+def _departure_id_errors(hass, feed, departures, excluded=None, *, allow_legacy=False):
     """The sensor platform's unique-ID namespace spans every feed and legacy YAML."""
     from homeassistant.helpers import entity_registry as er
 
@@ -110,7 +110,16 @@ def _departure_id_errors(hass, feed, departures, excluded=None):
         if entity_id:
             entity = registry.async_get(entity_id)
             if entity and (excluded is None or entity.config_entry_id != excluded):
-                return {"base": "duplicate_departure"}
+                # A top-level YAML import can migrate our own unowned legacy
+                # registry identity. UI creation and other config-entry owners
+                # retain collision protection; HA performs the adoption itself.
+                legacy = (
+                    allow_legacy
+                    and entity.config_entry_id is None
+                    and entity.platform == DOMAIN
+                )
+                if not legacy:
+                    return {"base": "duplicate_departure"}
     return {}
 
 
@@ -227,7 +236,13 @@ class GTFSRtConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             user_input = _strip_input(user_input)
-            candidate = dict(entry.data)
+            # The displayed form is authoritative: the frontend omits optional
+            # strings when cleared, rather than submitting an empty string.
+            candidate = {
+                key: value
+                for key, value in entry.data.items()
+                if key not in _FEED_FIELDS
+            }
             candidate.update(
                 {key: value for key, value in user_input.items() if key in _FEED_FIELDS}
             )
@@ -238,7 +253,7 @@ class GTFSRtConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not errors and self._duplicate_url(candidate, entry.entry_id):
                 errors["base"] = "already_configured"
             if not errors:
-                data = normalize_feed_config(candidate)
+                data = {**candidate, **normalize_feed_config(candidate)}
                 self.hass.config_entries.async_update_entry(
                     entry,
                     data=data,
@@ -260,9 +275,33 @@ class GTFSRtConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data = normalize_feed_config(import_data)
         feed_id = data[CONF_FEED_ID]
 
-        for entry in self.hass.config_entries.async_entries(DOMAIN):
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        existing = None
+        for entry in entries:
             if entry.data.get(CONF_FEED_ID) != feed_id:
                 continue
+            if entry.source != config_entries.SOURCE_IMPORT:
+                return self.async_abort(reason="already_configured")
+            existing = entry
+            break
+
+        if any(
+            entry.source != config_entries.SOURCE_IMPORT
+            and entry.data.get("trip_update_url") == data["trip_update_url"]
+            for entry in entries
+        ):
+            return self.async_abort(reason="already_configured")
+        if _departure_id_errors(
+            self.hass,
+            data,
+            data["departures"],
+            existing.entry_id if existing else None,
+            allow_legacy=True,
+        ):
+            return self.async_abort(reason="duplicate_departure")
+
+        if existing is not None:
+            entry = existing
             if entry.data != data or entry.title != data[CONF_NAME]:
                 self.hass.config_entries.async_update_entry(
                     entry, data=data, title=data[CONF_NAME]

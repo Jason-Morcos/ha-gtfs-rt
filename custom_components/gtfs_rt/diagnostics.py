@@ -29,9 +29,49 @@ def redact_url(value):
     return REDACTED
 
 
+def _observed_routes(info):
+    routes = set()
+    for route, stops in list(info.items()):
+        for details in list(stops.values()):
+            for detail in details:
+                for report in getattr(detail, "_reports", ()) or (detail,):
+                    observed = getattr(report, "route_id", None) or route
+                    if observed:
+                        routes.add(observed)
+    return routes
+
+
+def _stop_details(info, stop_id):
+    rows = []
+    routes = set()
+    for route, stops in list(info.items()):
+        for detail in stops.get(stop_id, []):
+            if detail not in rows:
+                rows.append(detail)
+            for report in getattr(detail, "_reports", ()) or (detail,):
+                observed = getattr(report, "route_id", None) or route
+                if observed:
+                    routes.add(observed)
+    return rows, sorted(routes)
+
+
 async def async_get_config_entry_diagnostics(hass, entry):
     data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     info = data.info if data else {}
+    departures = []
+    for departure in entry.data.get(CONF_DEPARTURES, []):
+        stop_id, route_id = departure[CONF_STOP_ID], departure.get(CONF_ROUTE) or ""
+        details, routes = _stop_details(info, stop_id)
+        get_error = getattr(data, "get_departure_error", None)
+        departures.append(
+            {
+                "stop_id": stop_id,
+                "route_id": route_id or None,
+                "routes_at_stop": routes,
+                "departures_at_stop": len(details),
+                "error": get_error(route_id, stop_id) if get_error else None,
+            }
+        )
     return {
         "feed": {
             key: redact_url(entry.data[key])
@@ -46,23 +86,10 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "runtime": {
             "loaded": data is not None,
             "trip_update_error": data.last_trip_update_error if data else None,
+            "primary_feed_error": getattr(data, "_primary_trip_update_error", None),
             "vehicle_feed_error": data.vehicle_feed_error if data else None,
-            "routes_with_departures": len(info),
+            "transit_feed_error": getattr(data, "transit_feed_error", None),
+            "routes_with_departures": len(_observed_routes(info)),
         },
-        "departures": [
-            {
-                "stop_id": departure[CONF_STOP_ID],
-                "route_id": departure.get(CONF_ROUTE) or None,
-                "routes_at_stop": sorted(
-                    route
-                    for route, stops in list(info.items())
-                    if stops.get(departure[CONF_STOP_ID]) and route
-                ),
-                "departures_at_stop": sum(
-                    len(stops.get(departure[CONF_STOP_ID], []))
-                    for stops in list(info.values())
-                ),
-            }
-            for departure in entry.data.get(CONF_DEPARTURES, [])
-        ],
+        "departures": departures,
     }
