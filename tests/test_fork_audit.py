@@ -288,3 +288,56 @@ class ForkAuditTests(unittest.TestCase):
             self.assertEqual(get.call_count, 2)
         self.assertEqual(data.info["R"]["0"], [])
         self.assertNotIn("200", data.info["R"])
+
+    def test_stop_wide_trip_id_matches_require_compatible_known_routes(self):
+        cases = (("R", "Q", 2), ("R", "1_R", 1), ("1_R", "2_R", 2), ("R", "R", 1))
+        for left, right, count in cases:
+            reports = [
+                RT.StopDetails(
+                    NOW + dt.timedelta(minutes=5),
+                    None,
+                    None,
+                    None,
+                    tracking_source=source,
+                    trip_id="trip",
+                    route_id=route,
+                )
+                for source, route in (("gtfs_rt", left), ("onebusaway", right))
+            ]
+            for ordering in itertools.permutations(reports):
+                with self.subTest(left=left, right=right):
+                    self.assertEqual(
+                        len(
+                            RT.combine_duplicate_departures(
+                                list(ordering), match_routes=True
+                            )
+                        ),
+                        count,
+                    )
+                    first = RT.combine_duplicate_departures(
+                        [ordering[0]], match_routes=True
+                    )
+                    self.assertEqual(
+                        len(
+                            RT.combine_duplicate_departures(
+                                first + [ordering[1]], match_routes=True
+                            )
+                        ),
+                        count,
+                    )
+
+    def test_oba_delay_does_not_mix_predicted_and_scheduled_event_types(self):
+        ms = lambda seconds: int(
+            (NOW + dt.timedelta(seconds=seconds)).timestamp() * 1000
+        )
+        for predicted, scheduled in (
+            ("predictedDepartureTime", "scheduledArrivalTime"),
+            ("predictedArrivalTime", "scheduledDepartureTime"),
+        ):
+            with self.subTest(predicted=predicted):
+                details = RT.build_onebusaway_stop_details(
+                    {predicted: ms(300), scheduled: ms(240)}
+                )
+                self.assertEqual(details.arrival_time, NOW + dt.timedelta(minutes=5))
+                self.assertIsNone(details.delay)
+                self.assertIsNone(details.scheduled_time)

@@ -115,3 +115,15 @@ stop-arrivals connection failure with fallback and a slow-update warning.
 Those logs establish operational context, not that the synthetic bugs caused
 that incident or that this PR is installed. No live configuration, log level,
 restart, reload or integration installation was changed.
+
+
+## GitHub Codex review corrections
+
+The full GitHub review of PR #16 at `1df5ba3` identified two additional interactions.
+Stop-wide trip-ID matching now rejects known conflicting routes even across
+providers, while preserving equivalent prefixed/unprefixed route IDs and
+known agency boundaries. OneBusAway delay and scheduled matching metadata use
+only the scheduled event corresponding to the selected realtime event; missing
+counterpart timestamps remain unknown instead of adding dwell time to delay.
+Both findings have synthetic regressions, including reversed/repeated merge
+orders and both arrival/departure mismatch directions.

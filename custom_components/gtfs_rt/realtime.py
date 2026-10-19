@@ -83,7 +83,12 @@ def _shares_trip_id(detail, group, ambiguities, match_routes=False):
                 return False
             if match_routes and detail.route_id != candidate.route_id:
                 return False
-        elif has_numeric_prefix(detail.trip_id) and has_numeric_prefix(
+        if match_routes and detail.route_id and candidate.route_id and not (
+            route_id_matches(detail.route_id, candidate.route_id)
+            or route_id_matches(candidate.route_id, detail.route_id)
+        ):
+            return False
+        if has_numeric_prefix(detail.trip_id) and has_numeric_prefix(
             candidate.trip_id
         ):
             if (
@@ -339,11 +344,13 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
     """Convert an OBA arrival row into StopDetails."""
     predicted_departure = int(item.get("predictedDepartureTime") or 0)
     predicted_ms = predicted_departure or int(item.get("predictedArrivalTime") or 0)
-    # Keep delay relative to the same event when only arrival predictions exist.
-    scheduled_fields = ("scheduledDepartureTime", "scheduledArrivalTime")
-    if predicted_ms and not predicted_departure:
-        scheduled_fields = tuple(reversed(scheduled_fields))
-    scheduled_ms = int(item.get(scheduled_fields[0]) or item.get(scheduled_fields[1]) or 0)
+    # A different scheduled event includes dwell time and cannot establish delay
+    # or a matching scheduled instant for a realtime prediction.
+    if predicted_ms:
+        scheduled_field = "scheduledDepartureTime" if predicted_departure else "scheduledArrivalTime"
+        scheduled_ms = int(item.get(scheduled_field) or 0)
+    else:
+        scheduled_ms = int(item.get("scheduledDepartureTime") or item.get("scheduledArrivalTime") or 0)
     chosen_ms = predicted_ms or scheduled_ms
     if chosen_ms <= 0:
         return None
