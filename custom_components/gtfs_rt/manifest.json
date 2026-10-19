@@ -3,10 +3,13 @@
     "name": "GTFS-Realtime",
     "documentation": "https://github.com/Jason-Morcos/ha-gtfs-rt",
     "dependencies": [],
+    "integration_type": "service",
+    "iot_class": "cloud_polling",
+    "issue_tracker": "https://github.com/Jason-Morcos/ha-gtfs-rt/issues",
     "codeowners": ["@Jason-Morcos"],
     "config_flow": true,
     "version": "1.5.2",
     "requirements": [
-        "gtfs-realtime-bindings==2.0.0"
+        "gtfs-realtime-bindings==2.2.0"
     ]
 }

@@ -36,10 +36,12 @@ from .const import (
     REQUEST_TIMEOUT,
     TIME_STR_FORMAT,
 )
-from .health import STATUS_LOOKUP_FAILED, STATUS_SERVICE_EXPECTED, StaticScheduleValidator
+from .feed import FeedFetchError, VehicleIndex, fetch_feed
+from .health import STATUS_SERVICE_EXPECTED, StaticScheduleValidator
 from .realtime import (
     TRACKING_SOURCE_GTFS_RT,
     StopDetails,
+    valid_position,
     combine_duplicate_departures,
     filter_onebusaway_arrivals,
     filter_transit_app_departures,
@@ -69,7 +71,7 @@ ATTR_TRACKING_SOURCE = "Tracking source"
 MIN_TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=60)
 MIN_TRANSIT_APP_REFRESH_INTERVAL = datetime.timedelta(seconds=60)
 DEFAULT_STOP_ARRIVALS_BACKOFF = datetime.timedelta(minutes=5)
-MAX_UPCOMING_DEPARTURES = 5
+MAX_UPCOMING_DEPARTURES = 10
 TRANSIT_API_MAX_DEPARTURES_PER_REQUEST = 10
 TRANSIT_API_MAX_STOP_IDS_PER_REQUEST = 100
 
@@ -115,6 +117,12 @@ def departure_attributes(detail):
         attrs["longitude"] = detail.position.longitude
     if detail.trip_id:
         attrs["trip_id"] = detail.trip_id
+    if detail.trip_start_date:
+        attrs["trip_start_date"] = detail.trip_start_date
+    if detail.trip_start_time:
+        attrs["trip_start_time"] = detail.trip_start_time
+    if detail.route_id:
+        attrs["route_id"] = detail.route_id
     return attrs
 
 
@@ -213,17 +221,23 @@ class PublicTransportSensor(SensorEntity):
 
     def _get_next_buses(self):
         now = dt_util.now().astimezone(datetime.timezone.utc)
-        return [
-            detail for detail in self.data.info.get(self._route, {}).get(self._stop, [])
+        routes = [self.data.info.get(self._route, {})] if self._route else list(self.data.info.values())
+        combined = combine_duplicate_departures([
+            detail for stops in routes for detail in stops.get(self._stop, [])
             if detail.arrival_time > now
-        ]
+        ], match_routes=not self._route)
+        return [detail for detail in combined if detail.arrival_time > now]
 
     def _get_schedule_status(self):
         return self.data.get_schedule_status(self._route, self._stop)
 
+    def _get_realtime_error(self):
+        get_error = getattr(self.data, "get_departure_error", None)
+        return get_error(self._route, self._stop) if get_error else self.data.last_trip_update_error
+
     def _get_problem_reason(self, schedule_status, next_buses):
-        if self.data.last_trip_update_error:
-            return self.data.last_trip_update_error
+        if error := self._get_realtime_error():
+            return error
         if schedule_status is None:
             return None
         if schedule_status.problem_reason:
@@ -243,6 +257,14 @@ class PublicTransportSensor(SensorEntity):
         if not self._feed_id or not self._config_entry_id:
             return None
 
+        if not self._route:
+            return DeviceInfo(
+                identifiers={(DOMAIN, f"{self._feed_id}:stop:{self._stop}")},
+                name=f"{self._feed_name or 'GTFS'} Stop {self._stop}",
+                entry_type=DeviceEntryType.SERVICE,
+                manufacturer="GTFS-Realtime",
+                model="Transit Stop",
+            )
         route_label = self.data.get_route_label(self._route) or self._route
         feed_prefix = f"{self._feed_name} " if self._feed_name else ""
         return DeviceInfo(
@@ -263,7 +285,7 @@ class PublicTransportSensor(SensorEntity):
         next_buses = self._get_next_buses()
         schedule_status = self._get_schedule_status()
         return not should_mark_entity_unavailable(
-            last_trip_update_error=self.data.last_trip_update_error,
+            last_trip_update_error=self._get_realtime_error(),
             schedule_status=schedule_status,
             has_realtime_departures=len(next_buses) > 0,
         )
@@ -350,6 +372,7 @@ class PublicTransportData:
         )
         self.info = {}
         self.last_trip_update_error = None
+        self.vehicle_feed_error = None
         self._schedule_status = {}
         self._last_stop_arrival_info = {}
         self._stop_arrivals_routes_by_stop = {}
@@ -359,11 +382,13 @@ class PublicTransportData:
                 routes.append(route_id)
         self._stop_arrivals_stop_ids = list(self._stop_arrivals_routes_by_stop)
         self._stop_arrivals_last_refresh = {}
+        self._stop_arrivals_attempted = set()
         self._stop_arrivals_refresh_cursor = 0
         self._stop_arrivals_backoff_until = None
         self._last_transit_app_info = {}
         self._transit_app_backoff_until = None
         self._transit_app_last_refresh = None
+        self._transit_app_stop_refresh = {}
 
     def get_schedule_status(self, route_id, stop_id):
         return self._schedule_status.get((route_id, stop_id))
@@ -372,6 +397,33 @@ class PublicTransportData:
         if not self._schedule_validator:
             return None
         return self._schedule_validator.get_route_label(route_id)
+
+    def get_departure_error(self, route_id, stop_id):
+        error = getattr(self, "_primary_trip_update_error", self.last_trip_update_error)
+        if not error:
+            return None
+        now = dt_util.now().astimezone(datetime.timezone.utc)
+        # Coverage follows the configured bucket. A fallback for just one route
+        # is not evidence that an all-routes departure has a healthy source.
+        routes = [self.info.get(route_id, {})]
+        if any(detail.arrival_time > now for stops in routes for detail in stops.get(stop_id, [])):
+            return None
+        refreshed = self._stop_arrivals_last_refresh.get(stop_id)
+        if (self._stop_arrivals_url_template and refreshed
+                and now - refreshed < MIN_TIME_BETWEEN_UPDATES * max(1, len(self._stop_arrivals_stop_ids))):
+            return None
+        mapped_stops = [global_stop for route, stop, global_stop, _ in self._transit_departures
+                        if route == route_id and stop == stop_id]
+        if any(global_stop in self._transit_app_stop_refresh
+               and now - self._transit_app_stop_refresh[global_stop] < MIN_TRANSIT_APP_REFRESH_INTERVAL
+               for global_stop in mapped_stops):
+            return None
+        mapped = bool(mapped_stops)
+        if (mapped and self._transit_app_last_refresh
+                and now - self._transit_app_last_refresh < MIN_TRANSIT_APP_REFRESH_INTERVAL
+                and not getattr(self, "transit_feed_error", None)):
+            return None
+        return error
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     def update(self):
@@ -383,23 +435,32 @@ class PublicTransportData:
             if stop_arrivals_error:
                 _LOGGER.warning("Falling back to trip updates after stop-level arrivals failure")
                 self.last_trip_update_error = None
+                stop_cache = self.info
                 positions, vehicles_trips, occupancy = (
                     self._get_vehicle_positions() if self._vehicle_position_url else ({}, {}, {})
                 )
                 self._update_route_statuses(positions, vehicles_trips, occupancy)
+                if self._has_departures(stop_cache):
+                    self._merge_departure_times(stop_cache)
                 if self.last_trip_update_error:
                     self.last_trip_update_error = f"{stop_arrivals_error}; {self.last_trip_update_error}"
+            else:
+                self.last_trip_update_error = getattr(self, "_stop_arrivals_error", None)
         else:
             positions, vehicles_trips, occupancy = (
                 self._get_vehicle_positions() if self._vehicle_position_url else ({}, {}, {})
             )
             self._update_route_statuses(positions, vehicles_trips, occupancy)
 
-        transit_app_error = self._update_transit_app_statuses()
-        if self._has_departures(self.info):
+        self._primary_trip_update_error = self.last_trip_update_error
+        self.transit_feed_error = self._update_transit_app_statuses()
+        # A healthy empty primary feed remains healthy when optional enrichment
+        # fails. A partial fallback covers only its configured route/stop pairs.
+        if self._monitored_departures:
+            errors = [self.get_departure_error(route, stop) for route, stop in self._monitored_departures]
+            self.last_trip_update_error = next((error for error in errors if error), None)
+        elif self._has_departures(self.info):
             self.last_trip_update_error = None
-        elif transit_app_error and not self.last_trip_update_error:
-            self.last_trip_update_error = transit_app_error
 
         if self._schedule_validator:
             now = dt_util.now()
@@ -411,6 +472,7 @@ class PublicTransportData:
             self._schedule_status = {}
 
     def _update_stop_arrival_statuses(self):
+        self._stop_arrivals_error = None
         now = dt_util.now().astimezone(datetime.timezone.utc)
         cached_departures = self._future_departure_times(
             self._last_stop_arrival_info,
@@ -420,12 +482,11 @@ class PublicTransportData:
 
         if self._stop_arrivals_backoff_until and now < self._stop_arrivals_backoff_until:
             self.info = cached_departures
-            if self._has_departures(cached_departures):
-                return None
-            return (
+            self._stop_arrivals_error = (
                 "Stop-level arrivals temporarily rate limited until "
                 f"{local_time_string(self._stop_arrivals_backoff_until)}"
             )
+            return None if self._has_departures(cached_departures) else self._stop_arrivals_error
 
         departure_times = cached_departures
         stop_ids_to_refresh = self._get_stop_ids_to_refresh(now)
@@ -435,7 +496,9 @@ class PublicTransportData:
             self._last_stop_arrival_info = departure_times
             return None
 
+        errors = []
         for stop_id in stop_ids_to_refresh:
+            self._stop_arrivals_attempted.add(stop_id)
             try:
                 url = self._stop_arrivals_url_template.format(stop_id=stop_id)
                 response = requests.get(url, headers=self._headers, timeout=REQUEST_TIMEOUT)
@@ -448,26 +511,35 @@ class PublicTransportData:
                         "Stop-level arrivals rate limited; backing off until %s",
                         local_time_string(self._stop_arrivals_backoff_until),
                     )
-                    if self._has_departures(departure_times):
-                        return None
-                    return (
+                    self._stop_arrivals_error = (
                         "Stop-level arrivals temporarily rate limited until "
                         f"{local_time_string(self._stop_arrivals_backoff_until)}"
                     )
+                    return None if self._has_departures(departure_times) else self._stop_arrivals_error
                 response.raise_for_status()
                 payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Invalid stop arrivals payload")
+                if payload.get("code") not in (None, 200):
+                    code = payload.get("code")
+                    safe_code = code if isinstance(code, int) else "invalid"
+                    errors.append(f"Stop-level arrivals unavailable: API code {safe_code}")
+                    _LOGGER.error("Unexpected stop-level arrivals payload code: %s", safe_code)
+                    continue
+                data = payload.get("data")
+                if not isinstance(data, dict):
+                    raise ValueError("Invalid stop arrivals data")
+                entry = data.get("entry")
+                if not isinstance(entry, dict):
+                    raise ValueError("Invalid stop arrivals entry")
+                arrivals = entry.get("arrivalsAndDepartures")
+                if not isinstance(arrivals, list):
+                    raise ValueError("Invalid stop arrivals list")
             except Exception as err:
-                self.last_trip_update_error = f"Stop-level arrivals unavailable ({type(err).__name__})"
+                errors.append(f"Stop-level arrivals unavailable ({type(err).__name__})")
                 _LOGGER.error("Unable to refresh stop-level arrivals (%s)", type(err).__name__)
-                return self.last_trip_update_error
+                continue
 
-            if payload.get("code") not in (None, 200):
-                self.last_trip_update_error = f"Stop-level arrivals unavailable: API code {payload.get('code')}"
-                _LOGGER.error("Unexpected stop-level arrivals payload code: %s", payload.get("code"))
-                return self.last_trip_update_error
-
-            entry = (payload.get("data") or {}).get("entry") or {}
-            arrivals = entry.get("arrivalsAndDepartures") or []
             for route_id in self._stop_arrivals_routes_by_stop.get(stop_id, []):
                 departure_times.setdefault(route_id, {})
                 departure_times[route_id][stop_id] = filter_onebusaway_arrivals(arrivals, route_id, now)
@@ -476,7 +548,8 @@ class PublicTransportData:
         self.info = departure_times
         self._last_stop_arrival_info = departure_times
         self._stop_arrivals_backoff_until = None
-        return None
+        self.last_trip_update_error = errors[0] if errors else None
+        return self.last_trip_update_error
 
     def _update_transit_app_statuses(self):
         if not self._transit_api_key or not self._transit_departures:
@@ -511,12 +584,10 @@ class PublicTransportData:
                 for _route, _stop, global_stop_id, _transit_route in self._transit_departures
             }
         )
-        route_departures = []
-        try:
-            for stop_id_batch in self._chunked(
-                global_stop_ids,
-                TRANSIT_API_MAX_STOP_IDS_PER_REQUEST,
-            ):
+        transit_departure_times = cached_departures
+        error = None
+        for stop_id_batch in self._chunked(global_stop_ids, TRANSIT_API_MAX_STOP_IDS_PER_REQUEST):
+            try:
                 response = requests.get(
                     TRANSIT_API_STOP_DEPARTURES_URL,
                     params={
@@ -535,41 +606,44 @@ class PublicTransportData:
                     timeout=REQUEST_TIMEOUT,
                 )
                 if response.status_code == 429:
-                    retry_after = self._get_stop_arrivals_retry_after(response)
-                    self._transit_app_backoff_until = now + retry_after
-                    self._merge_departure_times(cached_departures)
-                    self._last_transit_app_info = cached_departures
+                    self._transit_app_backoff_until = now + self._get_stop_arrivals_retry_after(response)
                     _LOGGER.warning(
                         "Transit app departures rate limited; backing off until %s",
                         local_time_string(self._transit_app_backoff_until),
                     )
-                    if self._has_departures(cached_departures):
-                        return None
-                    return (
+                    error = (
                         "Transit app departures temporarily rate limited until "
                         f"{local_time_string(self._transit_app_backoff_until)}"
                     )
+                    break  # A server-wide rate limit applies to remaining batches too.
                 response.raise_for_status()
                 payload = response.json()
-                route_departures.extend(payload.get("route_departures") or [])
-        except Exception as err:
-            _LOGGER.warning("Unable to refresh Transit app departures (%s)", type(err).__name__)
-            self._merge_departure_times(cached_departures)
-            self._last_transit_app_info = cached_departures
-            return f"Transit app departures unavailable ({type(err).__name__})"
+                if not isinstance(payload, dict) or not isinstance(payload.get("route_departures"), list):
+                    raise ValueError("Invalid Transit departures payload")
+            except Exception as err:
+                _LOGGER.warning("Unable to refresh Transit app departures (%s)", type(err).__name__)
+                error = f"Transit app departures unavailable ({type(err).__name__})"
+                continue
 
-        transit_departure_times = {}
-        for route_id, stop_id, global_stop_id, transit_route in self._transit_departures:
-            transit_departure_times.setdefault(route_id, {})
-            transit_departure_times[route_id][stop_id] = filter_transit_app_departures(
-                route_departures,
-                global_stop_id=global_stop_id,
-                configured_route=transit_route,
-                now=now,
-            )
+            for route_id, stop_id, global_stop_id, transit_route in self._transit_departures:
+                if global_stop_id not in stop_id_batch:
+                    continue
+                transit_departure_times.setdefault(route_id, {})
+                transit_departure_times[route_id][stop_id] = filter_transit_app_departures(
+                    payload["route_departures"],
+                    global_stop_id=global_stop_id,
+                    configured_route=transit_route,
+                    now=now,
+                )
+            for global_stop_id in stop_id_batch:
+                self._transit_app_stop_refresh[global_stop_id] = now
 
+        # Publish successful batches even when another failed. Failed batches
+        # keep their unexpired cache; successful empty results clear old data.
         self._merge_departure_times(transit_departure_times)
         self._last_transit_app_info = transit_departure_times
+        if error:
+            return error
         self._transit_app_backoff_until = None
         self._transit_app_last_refresh = now
         return None
@@ -589,8 +663,11 @@ class PublicTransportData:
         if not stale_stop_ids:
             return []
 
-        if len(self._stop_arrivals_last_refresh) < len(self._stop_arrivals_stop_ids):
-            return stale_stop_ids
+        # Warm each stop once, including failures. Only successful timestamps
+        # establish healthy coverage; attempts solely control request pacing.
+        attempted = self._stop_arrivals_attempted | self._stop_arrivals_last_refresh.keys()
+        if len(attempted) < len(self._stop_arrivals_stop_ids):
+            return [stop_id for stop_id in self._stop_arrivals_stop_ids if stop_id not in attempted]
 
         for offset in range(len(self._stop_arrivals_stop_ids)):
             index = (self._stop_arrivals_refresh_cursor + offset) % len(self._stop_arrivals_stop_ids)
@@ -613,9 +690,8 @@ class PublicTransportData:
                 filtered_details = [
                     detail for detail in details if detail.arrival_time > now
                 ]
-                future_departures[route_id][stop_id] = combine_duplicate_departures(
-                    filtered_details
-                )
+                combined = combine_duplicate_departures(filtered_details, match_routes=not route_id)
+                future_departures[route_id][stop_id] = [detail for detail in combined if detail.arrival_time > now]
         return future_departures
 
     @staticmethod
@@ -632,7 +708,7 @@ class PublicTransportData:
             for stop_id, details in stops.items():
                 existing = self.info[route_id].get(stop_id, [])
                 self.info[route_id][stop_id] = combine_duplicate_departures(
-                    list(existing) + list(details or [])
+                    list(existing) + list(details or []), match_routes=not route_id
                 )
 
     @staticmethod
@@ -666,32 +742,47 @@ class PublicTransportData:
     def _update_route_statuses(self, vehicle_positions, vehicles_trips, vehicle_occupancy):
         from google.transit import gtfs_realtime_pb2
 
-        feed = gtfs_realtime_pb2.FeedMessage()
         try:
-            response = requests.get(self._trip_update_url, headers=self._headers, timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
-            feed.ParseFromString(response.content)
-        except Exception as err:
-            self.last_trip_update_error = f"Realtime trip updates unavailable ({type(err).__name__})"
-            _LOGGER.error("Unable to refresh realtime trip updates (%s)", type(err).__name__)
+            feed = fetch_feed(self._trip_update_url, self._headers)
+        except FeedFetchError as err:
+            self.last_trip_update_error = f"Realtime trip updates unavailable ({err})"
+            _LOGGER.error("Unable to refresh realtime trip updates (%s)", err)
             return
 
         departure_times = {}
         now = dt_util.now().timestamp()
+        if isinstance(vehicles_trips, VehicleIndex):
+            vehicles_trips.set_trip_instances(
+                entity.trip_update.trip for entity in feed.entity
+                if not entity.is_deleted and entity.HasField("trip_update")
+                and entity.trip_update.trip.schedule_relationship not in (
+                    gtfs_realtime_pb2.TripDescriptor.CANCELED,
+                    gtfs_realtime_pb2.TripDescriptor.DELETED,
+                )
+            )
 
         for entity in feed.entity:
             if entity.is_deleted or not entity.HasField("trip_update"):
                 continue
             trip_update = entity.trip_update
-            if trip_update.trip.schedule_relationship in (
-                gtfs_realtime_pb2.TripDescriptor.CANCELED,
-            ):
+            if gtfs_realtime_pb2.TripDescriptor.ScheduleRelationship.Name(
+                trip_update.trip.schedule_relationship
+            ) in {"CANCELED", "DELETED"}:
                 continue
 
-            route_id = trip_update.trip.route_id
-            vehicle_id = trip_update.vehicle.id or vehicles_trips.get(trip_update.trip.trip_id)
+            trip = trip_update.trip
+            trip_vehicle = vehicles_trips.for_trip(trip) if isinstance(vehicles_trips, VehicleIndex) else None
+            route_id = trip.route_id or (trip_vehicle.route_id if trip_vehicle else "")
+            vehicle_id = trip_update.vehicle.id or (
+                trip_vehicle.vehicle_id if trip_vehicle else
+                None if isinstance(vehicles_trips, VehicleIndex) else vehicles_trips.get(trip.trip_id)
+            )
+            position = vehicle_positions.get(vehicle_id)
+            occupancy = vehicle_occupancy.get(vehicle_id)
+            if trip_vehicle and not trip_update.vehicle.id:
+                position, occupancy = trip_vehicle.position, trip_vehicle.occupancy
             for stop in trip_update.stop_time_update:
-                if stop.schedule_relationship in (
+                if not stop.stop_id or stop.schedule_relationship in (
                     gtfs_realtime_pb2.TripUpdate.StopTimeUpdate.SKIPPED,
                     gtfs_realtime_pb2.TripUpdate.StopTimeUpdate.NO_DATA,
                 ):
@@ -707,41 +798,42 @@ class PublicTransportData:
                     continue
                 details = StopDetails(
                     arrival_time,
-                    vehicle_positions.get(vehicle_id),
-                    vehicle_occupancy.get(vehicle_id),
+                    position,
+                    occupancy,
                     event.delay if event.HasField("delay") else None,
                     TRACKING_SOURCE_GTFS_RT,
                     True,
-                    trip_update.trip.trip_id or None,
+                    trip.trip_id or None,
+                    trip_start_date=trip.start_date or None,
+                    trip_start_time=trip.start_time or None,
+                    route_id=route_id or None,
+                    _stop_sequence=("gtfs_rt", stop.stop_sequence)
+                    if stop.HasField("stop_sequence") else None,
                 )
                 departure_times.setdefault(route_id, {}).setdefault(stop.stop_id, []).append(details)
 
         for route in departure_times:
             for stop in departure_times[route]:
                 departure_times[route][stop] = combine_duplicate_departures(
-                    departure_times[route][stop]
+                    departure_times[route][stop], match_routes=not route
                 )
 
         self.info = departure_times
 
     def _get_vehicle_positions(self):
-        from google.transit import gtfs_realtime_pb2
-
-        feed = gtfs_realtime_pb2.FeedMessage()
         try:
-            response = requests.get(
-                self._vehicle_position_url,
-                headers=self._headers,
-                timeout=REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            feed.ParseFromString(response.content)
-        except Exception as err:
-            _LOGGER.warning("Unable to refresh vehicle positions (%s)", type(err).__name__)
+            feed = fetch_feed(self._vehicle_position_url, self._headers)
+        except FeedFetchError as err:
+            if self.vehicle_feed_error is None:
+                _LOGGER.warning("Unable to refresh vehicle positions (%s)", err)
+            self.vehicle_feed_error = str(err)
             return {}, {}, {}
+        if self.vehicle_feed_error is not None:
+            _LOGGER.info("Vehicle positions feed is available again")
+        self.vehicle_feed_error = None
 
         positions = {}
-        vehicles_trips = {}
+        vehicles_trips = VehicleIndex(feed)
         occupancy = {}
 
         for entity in feed.entity:
@@ -751,10 +843,12 @@ class PublicTransportData:
             vehicle_id = vehicle.vehicle.id
             if not vehicle_id:
                 continue
-            if vehicle.HasField("position"):
-                positions[vehicle_id] = vehicle.position
-            if vehicle.trip.trip_id:
-                vehicles_trips[vehicle.trip.trip_id] = vehicle_id
+            position = valid_position(
+                vehicle.position.latitude if vehicle.position.HasField("latitude") else None,
+                vehicle.position.longitude if vehicle.position.HasField("longitude") else None,
+            )
+            if position is not None:
+                positions[vehicle_id] = position
             if vehicle.HasField("occupancy_status"):
                 try:
                     occupancy[vehicle_id] = OccupancyStatus(vehicle.occupancy_status).name

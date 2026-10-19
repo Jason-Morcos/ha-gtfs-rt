@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = ROOT / "custom_components" / "gtfs_rt"
@@ -28,7 +29,9 @@ class FakeConfigEntryState:
 homeassistant = types.ModuleType("homeassistant")
 config_entries = types.ModuleType("homeassistant.config_entries")
 config_entries.ConfigFlow = FakeConfigFlow
+config_entries.OptionsFlow = FakeConfigFlow
 config_entries.ConfigEntryState = FakeConfigEntryState
+config_entries.SOURCE_IMPORT = "import"
 const = types.ModuleType("homeassistant.const")
 const.CONF_NAME = "name"
 homeassistant.config_entries = config_entries
@@ -37,6 +40,22 @@ homeassistant.const = const
 sys.modules["homeassistant"] = homeassistant
 sys.modules["homeassistant.config_entries"] = config_entries
 sys.modules["homeassistant.const"] = const
+
+core = types.ModuleType("homeassistant.core")
+core.callback = lambda function: function
+sys.modules["homeassistant.core"] = core
+helpers = types.ModuleType("homeassistant.helpers")
+selector = types.ModuleType("homeassistant.helpers.selector")
+selector.ObjectSelector = lambda: dict
+helpers.selector = selector
+sys.modules["homeassistant.helpers"] = helpers
+sys.modules["homeassistant.helpers.selector"] = selector
+feed = types.ModuleType("custom_components.gtfs_rt.feed")
+feed.FeedAuthError = type("FeedAuthError", (Exception,), {})
+feed.FeedFetchError = type("FeedFetchError", (Exception,), {})
+feed.InvalidFeedError = type("InvalidFeedError", (Exception,), {})
+feed.fetch_feed = lambda *args: None
+sys.modules[feed.__name__] = feed
 
 package = types.ModuleType("custom_components.gtfs_rt")
 package.__path__ = [str(PACKAGE_ROOT)]
@@ -60,6 +79,7 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+sys.modules.pop("custom_components.gtfs_rt.feed", None)
 
 
 class FakeConfigEntriesManager:
@@ -79,18 +99,31 @@ class FakeConfigEntriesManager:
 
 
 class ConfigFlowImportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # These focused tests isolate import update/reload behavior; native HA
+        # tests exercise entity-registry collision checks with real entries.
+        checker = patch.object(MODULE, "_departure_id_errors", return_value={})
+        checker.start()
+        self.addCleanup(checker.stop)
+
     async def test_import_updates_not_loaded_entry_without_reloading(self):
         entry = types.SimpleNamespace(
             data={"feed_id": "feed-1", "name": "Old"},
             title="Old",
             entry_id="entry-1",
             state=FakeConfigEntryState.NOT_LOADED,
+            source="import",
         )
         manager = FakeConfigEntriesManager([entry])
         flow = MODULE.GTFSRtConfigFlow()
         flow.hass = types.SimpleNamespace(config_entries=manager)
 
-        result = await flow.async_step_import({"feed_id": "feed-1", "name": "New"})
+        result = await flow.async_step_import(
+            {
+                "feed_id": "feed-1", "name": "New",
+                "trip_update_url": "https://example.org/trips", "departures": [],
+            }
+        )
 
         self.assertEqual(result, {"type": "abort", "reason": "already_configured"})
         self.assertEqual(len(manager.updated), 1)
@@ -102,12 +135,18 @@ class ConfigFlowImportTests(unittest.IsolatedAsyncioTestCase):
             title="Old",
             entry_id="entry-1",
             state=FakeConfigEntryState.LOADED,
+            source="import",
         )
         manager = FakeConfigEntriesManager([entry])
         flow = MODULE.GTFSRtConfigFlow()
         flow.hass = types.SimpleNamespace(config_entries=manager)
 
-        result = await flow.async_step_import({"feed_id": "feed-1", "name": "New"})
+        result = await flow.async_step_import(
+            {
+                "feed_id": "feed-1", "name": "New",
+                "trip_update_url": "https://example.org/trips", "departures": [],
+            }
+        )
 
         self.assertEqual(result, {"type": "abort", "reason": "already_configured"})
         self.assertEqual(len(manager.updated), 1)

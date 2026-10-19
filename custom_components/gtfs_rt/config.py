@@ -35,7 +35,7 @@ DEPARTURE_SCHEMA = {
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_UNIQUE_ID): cv.string,
     vol.Required(CONF_STOP_ID): cv.string,
-    vol.Required(CONF_ROUTE): cv.string,
+    vol.Optional(CONF_ROUTE, default=""): cv.string,
     vol.Optional(CONF_TRANSIT_GLOBAL_STOP_ID): cv.string,
     vol.Optional(CONF_TRANSIT_ROUTE): cv.string,
 }
@@ -102,7 +102,7 @@ def derive_departure_unique_id(feed_id: str, departure: dict) -> str:
     """Generate a stable entity unique_id when the user has not set one."""
     payload = {
         CONF_NAME: departure.get(CONF_NAME, DEFAULT_NAME),
-        CONF_ROUTE: departure[CONF_ROUTE],
+        CONF_ROUTE: departure.get(CONF_ROUTE, ""),
         CONF_STOP_ID: departure[CONF_STOP_ID],
         CONF_FEED_ID: feed_id,
     }
@@ -117,20 +117,15 @@ def can_remove_route_device(config: dict, identifiers) -> bool:
     if not feed_id:
         return False
 
-    route_prefix = f"{feed_id}:route:"
-    device_route_identifiers = {
-        (domain, identifier)
-        for domain, identifier in identifiers
-        if domain == DOMAIN and str(identifier).startswith(route_prefix)
-    }
-    if not device_route_identifiers:
-        return False
-
-    configured_route_identifiers = {
-        (DOMAIN, f"{route_prefix}{departure[CONF_ROUTE]}")
+    prefixes = (f"{feed_id}:route:", f"{feed_id}:stop:")
+    owned = {(domain, identifier) for domain, identifier in identifiers
+             if domain == DOMAIN and str(identifier).startswith(prefixes)}
+    configured = {
+        (DOMAIN, f"{feed_id}:route:{departure[CONF_ROUTE]}")
+        if departure.get(CONF_ROUTE) else (DOMAIN, f"{feed_id}:stop:{departure[CONF_STOP_ID]}")
         for departure in config.get(CONF_DEPARTURES, [])
     }
-    return device_route_identifiers.isdisjoint(configured_route_identifiers)
+    return bool(owned) and owned.isdisjoint(configured)
 
 
 def normalize_feed_config(config: dict) -> dict:
@@ -142,7 +137,7 @@ def normalize_feed_config(config: dict) -> dict:
     for departure in config[CONF_DEPARTURES]:
         departure_dict = {
             CONF_NAME: departure.get(CONF_NAME, DEFAULT_NAME),
-            CONF_ROUTE: str(departure[CONF_ROUTE]),
+            CONF_ROUTE: str(departure.get(CONF_ROUTE, "")),
             CONF_STOP_ID: str(departure[CONF_STOP_ID]),
         }
         if transit_stop_id := departure.get(CONF_TRANSIT_GLOBAL_STOP_ID):

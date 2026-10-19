@@ -17,6 +17,18 @@ local transit systems that provide gtfs feeds.
 
 ## Configuration
 
+Requires Home Assistant 2025.6 or newer. After installation, add **GTFS-Realtime**
+under **Settings → Devices & services → Add integration**. Enter the feed URL and
+headers, then add one or more named departures. Leave `route` blank to watch all
+routes at a stop. UI feeds support **Reconfigure** for URL/key rotation and
+**Configure** for adding or removing departures. Reconfiguration preserves existing
+feed, device, and entity identities. Clearing an optional field removes its previous value. YAML-imported feeds remain managed in YAML.
+
+Existing route devices keep grouping configured stops by route. Departures without
+a route share a stop device; adding UI support does not migrate existing devices.
+
+### YAML configuration
+
 Add the following to your `configuration.yaml` file:
 
 ```yaml
@@ -106,9 +118,9 @@ Configuration variables:
 - **transit_api_key** (*Optional*): Transit app API key. When configured with per-departure `transit_global_stop_id` values, Transit app stop departures are used as the preferred realtime source and GTFS/stop-arrivals remain available as fallback data.
 - **headers**(*Optional*): Expects a dictionary. If provided, the dictionary will be sent as headers. (e.g. {"Authorization": "mykey"})
 - **departures** (*Required*): A list of routes and departure locations to watch
-- **unique_id** (*Optional*): A UUID for the entity to allow entity registry entries
-- **route** (*Optional*): The name of the gtfs route
-- **stopid** (*Optional*): The stopid for the location you want etas for
+- **unique_id** (*Optional*): A stable entity ID for the entity registry. It must be unique across every GTFS feed and legacy GTFS sensor in the installation.
+- **route** (*Optional*): The GTFS route ID. Omit it to include all routes at the stop; the same behavior applies to GTFS-RT, OneBusAway, Transit, and static schedule validation.
+- **stopid** (*Required*): The stopid for the location you want etas for
 - **transit_global_stop_id** (*Optional*): Transit app global stop id for this departure, such as `AGENCY:12345`.
 - **transit_route** (*Optional*): Transit app route label/id for this departure. Defaults to `route` when omitted.
 
@@ -120,11 +132,11 @@ When `static_schedule_url` is configured, each sensor also adds:
 - `Next scheduled departure`
 - `Problem reason`
 
-Schedule validation accepts either `calendar.txt` or `calendar_dates.txt` (or both), uses the feed's `agency_timezone`, and includes previous service days for times after `24:00:00`. When an older feed omits `agency.txt`, validation falls back to Home Assistant's configured timezone. Failed static-feed refreshes report `schedule_lookup_failed` and retry after five minutes; they do not replace the last complete schedule with a partially parsed archive.
+Schedule validation accepts either `calendar.txt` or `calendar_dates.txt` (or both), uses the feed's `agency_timezone`, and includes previous service days for times after `24:00:00`. When an older feed omits `agency.txt`, validation falls back to Home Assistant's configured timezone. Untimed intermediate stops retain calendar service without inventing a departure time. Static frequency schedules respect their service windows and stop offsets; only `exact_times=1` produces precise scheduled departures. Failed static-feed refreshes report `schedule_lookup_failed` and retry after five minutes; they do not replace the last complete schedule with a partially parsed archive.
 
 Realtime timestamps are compared as UTC instants and displayed in Home Assistant's configured timezone, including across daylight-saving transitions. Canceled GTFS-RT trips, deleted feed entities, skipped stops, and stops marked `NO_DATA` do not create predictions. Expired predictions are omitted between feed refreshes. Missing occupancy and delay stay unknown; an explicitly reported zero delay remains zero.
 
-Each sensor also exposes `Upcoming departures`, a list of up to five upcoming trips with:
+Each sensor also exposes `Upcoming departures`, a list of up to ten upcoming trips with:
 
 - `due_at`
 - `due_in`
@@ -133,9 +145,27 @@ Each sensor also exposes `Upcoming departures`, a list of up to five upcoming tr
 - `tracking_source` (`transit_app`, `onebusaway`, `gtfs_rt`, or `schedule`)
 - `is_realtime`
 - `trip_id` when the upstream realtime source exposes one
+- `route_id` when the provider reports it
+- `trip_start_date` / `trip_start_time` when GTFS-RT identifies a frequency-service instance
 - `latitude` / `longitude` when live vehicle position data is available
 
 When the feed is configured under the top-level `gtfs_rt:` key, the integration imports it into a Home Assistant config entry. That allows each route to appear as its own service device, so a line like `372` can group all of your chosen stops under a single device.
+
+Both binary protobuf and GTFS-realtime JSON (camelCase or snake_case) are accepted.
+Static ZIP files, HTML pages, empty responses, and debug text report a clear error
+instead of appearing to be a healthy empty feed. A valid header-only feed still
+represents a successful feed with no predictions. Vehicle-position failures are
+reported separately and do not prevent trip updates from working. Frequency-based
+trips are matched by trip ID, service date and start time, with ambiguous vehicle
+matches left unknown.
+
+Use the config entry's **Download diagnostics** action to inspect route IDs
+observed at your configured stops. Diagnostics omit headers, Transit credentials,
+and names, and remove URL user information, paths, query strings and fragments. Stop-wide
+sensors report the route IDs observed within provider results as well as per-sensor
+source errors. A fallback serving one configured route does not mask another
+route's failed source; healthy empty primary feeds remain available when an
+optional provider fails.
 
 When every departure for a route is removed from that feed configuration, the now-empty route device can be deleted from Home Assistant's device registry. Active route devices remain protected from removal.
 
@@ -145,7 +175,9 @@ If `transit_api_key` and `transit_global_stop_id` are configured, Transit app st
 
 Transit API requests are batched by Transit global stop id, capped at the API's 100-stop request limit, and internally paced so one feed does not repeatedly refresh inside a one-minute window. HTTP `429` responses honor `Retry-After` when present. Departures from Transit, OneBusAway, GTFS-RT, and schedule fallbacks are merged by trip id when available, then by a narrow cross-source time window, so duplicate provider reports do not appear as separate adjacent arrivals while same-source close headways remain intact.
 
-Because the OneBusAway REST API is a stop-level endpoint and uses API-key throttling, the integration automatically deduplicates repeated stop IDs, warms the cache on startup, then refreshes only one unique stop per update cycle in round-robin order while honoring `Retry-After` on HTTP `429` responses. This reduces steady-state request volume for multi-stop feeds without requiring extra YAML tuning.
+Successful Transit batches remain cached when another batch fails, including successful empty results. Deduplication preserves separately indexed visits to the same stop on loop trips.
+
+Because the OneBusAway REST API is a stop-level endpoint and uses API-key throttling, the integration automatically deduplicates repeated stop IDs, warms the cache on startup, then refreshes only one unique stop per update cycle in round-robin order while honoring `Retry-After` on HTTP `429` responses. This reduces steady-state request volume for multi-stop feeds without requiring extra YAML tuning. A failed stop does not prevent other stops from warming their caches. Explicit dropoff-only records are omitted, and departure times keep boarding vehicles visible.
 
 The legacy `sensor: - platform: gtfs_rt` format still works, but it will not create route devices and is now considered deprecated.
 
@@ -164,20 +196,17 @@ me or open an issue if you find other good sources.
 
 ## Reporting an Issue
 
-1. Setup your logger to print debug messages for this component using:
-```yaml
-logger:
-  default: info
-  logs:
-    custom_components.gtfs_rt: debug
-```
-2. Restart HA
-3. Verify you're still having the issue
-4. File an issue in this Github Repository containing your HA log (Developer section > Info > Load Full Home Assistant Log)
-   * You can paste your log file at pastebin https://pastebin.com/ and submit a link.
-   * Please include details about your setup (Pi, NUC, etc, docker?, HASSOS?)
-   * The log file can also be found at `/<config_dir>/home-assistant.log`
+Include your Home Assistant version, integration version, expected behavior,
+and a small description of the failure. For config-entry installations, download
+integration diagnostics from Settings → Devices & services → GTFS-Realtime.
+The integration omits credentials and redacts configured URLs in that download.
+Review the file before sharing it.
 
+If logs are needed, share the relevant `custom_components.gtfs_rt` errors and
+nearby traceback only. Remove credentials, private URLs, personal locations, and
+unrelated Home Assistant details before posting. Debug logging can be enabled
+for `custom_components.gtfs_rt` while reproducing a problem, then restored to its
+previous level.
 
 ## Development checks
 
@@ -186,8 +215,21 @@ The integration and its regression tests must work for arbitrary agencies and Ho
 Run the standalone tests with the pinned GTFS bindings installed (the suite stubs Home Assistant's entity APIs):
 
 ```sh
-python -m pip install gtfs-realtime-bindings==2.0.0 requests voluptuous
+python -m pip install gtfs-realtime-bindings==2.2.0 requests voluptuous
 python -m unittest discover -s tests
 ```
 
 These tests validate parsing, configuration, and sensor behavior; they do not establish that a particular live provider or physical display is healthy.
+
+Real Home Assistant tests run in a separate environment because the standalone
+suite intentionally stubs Home Assistant modules:
+
+```sh
+python -m pip install -r requirements_test_ha.txt
+python -m pytest -q tests_ha --asyncio-mode=auto
+```
+
+CI runs these native lifecycle tests on the minimum supported Home Assistant
+2025.6 and the current pinned test release, alongside the standalone regressions.
+The [upstream v1.0.0 review](docs/upstream-v1-review.md) records the adopted changes
+and the fork contracts retained from the comparison.

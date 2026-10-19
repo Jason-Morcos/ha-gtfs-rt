@@ -2,6 +2,7 @@
 import datetime as dt
 import unittest
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from test_health import HEALTH, StaticScheduleValidator, build_archive
 
@@ -34,6 +35,28 @@ class ScheduleResilienceTests(unittest.TestCase):
         self.assertTrue(status.service_today)
         self.assertEqual(status.next_scheduled_departure, dt.datetime(2026, 4, 3, 23, 10, tzinfo=UTC))
 
+    def test_extended_departure_service_today_follows_agency_civil_day(self):
+        files = schedule_files(departure="25:10:00", timezone="Europe/Berlin")
+        zone = ZoneInfo("Europe/Berlin")
+        friday = dt.datetime(2026, 4, 3, 12, tzinfo=zone)
+        before = validator(files, friday).get_status("R", "S", friday)
+        self.assertFalse(before.service_today)
+        self.assertFalse(before.service_expected_now)
+        self.assertEqual(before.status, HEALTH.STATUS_NO_SERVICE_TODAY)
+        expected = dt.datetime(2026, 4, 4, 1, 10, tzinfo=zone)
+        self.assertEqual(before.next_scheduled_departure, expected)
+        saturday = dt.datetime(2026, 4, 4, 1, tzinfo=zone)
+        self.assertEqual(saturday.astimezone(UTC).day, 3)
+        carried = validator(files, saturday).get_status("R", "S", saturday)
+        self.assertTrue(carried.service_today)
+        self.assertTrue(carried.service_expected_now)
+        self.assertEqual(carried.next_scheduled_departure, expected)
+        saturday_noon = saturday.replace(hour=12)
+        finished = validator(files, saturday_noon).get_status("R", "S", saturday_noon)
+        self.assertTrue(finished.service_today)
+        self.assertFalse(finished.service_expected_now)
+        self.assertIsNone(finished.next_scheduled_departure)
+
     def test_calendar_only_is_valid(self):
         files = schedule_files(departure="14:00:00")
         files.pop("calendar_dates.txt")
@@ -50,6 +73,8 @@ class ScheduleResilienceTests(unittest.TestCase):
         status = validator(files, now).get_status("R", "S", now)
         self.assertTrue(status.route_serves_stop)
         self.assertFalse(status.is_config_problem)
+        self.assertTrue(status.service_today)
+        self.assertFalse(status.service_expected_now)
         self.assertIsNone(status.next_scheduled_departure)
 
     def test_dropoff_only_stop_does_not_offer_a_departure(self):
@@ -58,6 +83,7 @@ class ScheduleResilienceTests(unittest.TestCase):
         now = dt.datetime(2026, 4, 3, 11, 45, tzinfo=UTC)
         status = validator(files, now).get_status("R", "S", now)
         self.assertTrue(status.route_serves_stop)
+        self.assertFalse(status.service_today)
         self.assertFalse(status.service_expected_now)
 
     def test_calendar_exception_removes_previous_day_service(self):
