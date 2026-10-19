@@ -28,6 +28,7 @@ class FakeConfigEntryState:
 homeassistant = types.ModuleType("homeassistant")
 config_entries = types.ModuleType("homeassistant.config_entries")
 config_entries.ConfigFlow = FakeConfigFlow
+config_entries.OptionsFlow = FakeConfigFlow
 config_entries.ConfigEntryState = FakeConfigEntryState
 const = types.ModuleType("homeassistant.const")
 const.CONF_NAME = "name"
@@ -37,6 +38,22 @@ homeassistant.const = const
 sys.modules["homeassistant"] = homeassistant
 sys.modules["homeassistant.config_entries"] = config_entries
 sys.modules["homeassistant.const"] = const
+
+core = types.ModuleType("homeassistant.core")
+core.callback = lambda function: function
+sys.modules["homeassistant.core"] = core
+helpers = types.ModuleType("homeassistant.helpers")
+selector = types.ModuleType("homeassistant.helpers.selector")
+selector.ObjectSelector = lambda: dict
+helpers.selector = selector
+sys.modules["homeassistant.helpers"] = helpers
+sys.modules["homeassistant.helpers.selector"] = selector
+feed = types.ModuleType("custom_components.gtfs_rt.feed")
+feed.FeedAuthError = type("FeedAuthError", (Exception,), {})
+feed.FeedFetchError = type("FeedFetchError", (Exception,), {})
+feed.InvalidFeedError = type("InvalidFeedError", (Exception,), {})
+feed.fetch_feed = lambda *args: None
+sys.modules[feed.__name__] = feed
 
 package = types.ModuleType("custom_components.gtfs_rt")
 package.__path__ = [str(PACKAGE_ROOT)]
@@ -60,6 +77,7 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+sys.modules.pop("custom_components.gtfs_rt.feed", None)
 
 
 class FakeConfigEntriesManager:

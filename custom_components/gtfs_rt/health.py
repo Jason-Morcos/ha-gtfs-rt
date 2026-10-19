@@ -103,6 +103,25 @@ class StaticScheduleValidator:
                 problem_reason=f"Static schedule unavailable ({type(err).__name__})",
             )
 
+        if not route_id:
+            routes = {route for route, stop in self._route_stop_service_ids if stop == stop_id}
+            statuses = [self.get_status(route, stop_id, now) for route in routes]
+            if statuses:
+                next_times = [status.next_scheduled_departure for status in statuses
+                              if status.next_scheduled_departure is not None]
+                service_today = any(status.service_today for status in statuses)
+                expected = any(status.service_expected_now for status in statuses)
+                return ScheduleStatus(
+                    status=STATUS_SERVICE_EXPECTED if expected else STATUS_NO_SERVICE_NOW if service_today else STATUS_NO_SERVICE_TODAY,
+                    route_exists=True, stop_exists=True, route_serves_stop=True,
+                    service_today=service_today, service_expected_now=expected,
+                    next_scheduled_departure=min(next_times) if next_times else None,
+                )
+            return ScheduleStatus(
+                status=STATUS_INVALID_STOP, route_exists=True, stop_exists=stop_id in self._stop_ids,
+                route_serves_stop=False, service_today=False, service_expected_now=False,
+                next_scheduled_departure=None, problem_reason="Stop has no boardable scheduled routes",
+            )
         route_exists = route_id in self._route_ids
         stop_exists = stop_id in self._stop_ids
         route_serves_stop = bool(self._route_stop_service_ids.get((route_id, stop_id)))
@@ -261,7 +280,7 @@ class StaticScheduleValidator:
         with archive.open("routes.txt") as route_file:
             for row in csv.DictReader(io.TextIOWrapper(route_file, "utf-8-sig")):
                 route_id = row["route_id"]
-                if route_id in self._monitored_routes:
+                if "" in self._monitored_routes or route_id in self._monitored_routes:
                     self._route_ids.add(route_id)
                     self._route_labels[route_id] = (
                         row.get("route_short_name")
@@ -278,7 +297,7 @@ class StaticScheduleValidator:
         with archive.open("trips.txt") as trip_file:
             for row in csv.DictReader(io.TextIOWrapper(trip_file, "utf-8-sig")):
                 route_id = row["route_id"]
-                if route_id not in self._monitored_routes:
+                if "" not in self._monitored_routes and route_id not in self._monitored_routes:
                     continue
                 trip_to_route_service[row["trip_id"]] = (route_id, row["service_id"])
 

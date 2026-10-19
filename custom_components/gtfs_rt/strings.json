@@ -1,8 +1,97 @@
 {
   "config": {
+    "step": {
+      "user": {
+        "title": "Configure a GTFS-Realtime feed",
+        "data": {
+          "name": "Feed name",
+          "trip_update_url": "Trip updates URL",
+          "vehicle_position_url": "Vehicle positions URL",
+          "static_schedule_url": "Static GTFS schedule URL",
+          "stop_arrivals_url_template": "Stop arrivals URL template",
+          "headers": "HTTP headers",
+          "transit_api_key": "Transit API key"
+        }
+      },
+      "departure": {
+        "title": "Add a departure",
+        "description": "Leave the route blank to include every route at this stop.",
+        "data": {
+          "name": "Departure name",
+          "stopid": "Stop ID",
+          "route": "Route ID (leave blank for all routes)",
+          "unique_id": "Entity unique ID (optional)",
+          "transit_global_stop_id": "Transit global stop ID",
+          "transit_route": "Transit route",
+          "add_another": "Add another departure"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure feed",
+        "data": {
+          "name": "Feed name",
+          "trip_update_url": "Trip updates URL",
+          "vehicle_position_url": "Vehicle positions URL",
+          "static_schedule_url": "Static GTFS schedule URL",
+          "stop_arrivals_url_template": "Stop arrivals URL template",
+          "headers": "HTTP headers",
+          "transit_api_key": "Transit API key"
+        }
+      }
+    },
+    "error": {
+      "already_configured": "This trip updates URL is already configured.",
+      "invalid_url": "Enter an HTTP or HTTPS URL with a hostname.",
+      "invalid_headers": "Headers must be an object with string names and values.",
+      "invalid_name": "Enter a feed name.",
+      "invalid_auth": "The feed rejected the supplied credentials.",
+      "invalid_feed": "The response is not a GTFS-Realtime feed.",
+      "cannot_connect": "Unable to download the feed.",
+      "duplicate_departure": "This stop and route or entity unique ID is already configured.",
+      "invalid_departure": "Enter a departure name and stop ID.",
+      "last_departure": "Keep at least one departure configured."
+    },
     "abort": {
-      "already_configured": "This GTFS feed is already configured.",
-      "yaml_only": "This integration is configured from YAML via the gtfs_rt section."
+      "already_configured": "This trip updates URL is already configured.",
+      "yaml_only": "This integration is configured from YAML via the gtfs_rt section.",
+      "yaml_managed": "This feed is managed by YAML. Edit the gtfs_rt configuration to change it.",
+      "reconfigure_successful": "Feed configuration updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Manage departures",
+        "menu_options": {
+          "add_departure": "Add a departure",
+          "remove_departure": "Remove a departure"
+        }
+      },
+      "add_departure": {
+        "title": "Add a departure",
+        "data": {
+          "name": "Departure name",
+          "stopid": "Stop ID",
+          "route": "Route ID (leave blank for all routes)",
+          "unique_id": "Entity unique ID (optional)",
+          "transit_global_stop_id": "Transit global stop ID",
+          "transit_route": "Transit route"
+        }
+      },
+      "remove_departure": {
+        "title": "Remove a departure",
+        "data": {
+          "departure": "Departure"
+        }
+      }
+    },
+    "error": {
+      "duplicate_departure": "This stop and route or entity unique ID is already configured.",
+      "invalid_departure": "Enter a departure name and stop ID.",
+      "last_departure": "Keep at least one departure configured."
+    },
+    "abort": {
+      "yaml_managed": "This feed is managed by YAML. Edit the gtfs_rt configuration to change it."
     }
   }
 }

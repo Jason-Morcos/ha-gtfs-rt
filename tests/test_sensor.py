@@ -161,7 +161,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(attrs[sensor_module.ATTR_NEXT_UP], "16:09")
         self.assertEqual(attrs[sensor_module.ATTR_TRACKING_SOURCE], "gtfs_rt")
         self.assertEqual(attrs[sensor_module.ATTR_NEXT_TRACKING_SOURCE], "gtfs_rt")
-        self.assertEqual(len(attrs[sensor_module.ATTR_UPCOMING_DEPARTURES]), 5)
+        self.assertEqual(len(attrs[sensor_module.ATTR_UPCOMING_DEPARTURES]), 6)
         self.assertEqual(
             attrs[sensor_module.ATTR_UPCOMING_DEPARTURES][0],
             {
@@ -408,7 +408,7 @@ class SensorUpdateTests(unittest.TestCase):
         self.assertEqual(len(request_params), 2)
         self.assertEqual(len(request_params[0]["global_stop_ids"].split(",")), 100)
         self.assertEqual(len(request_params[1]["global_stop_ids"].split(",")), 1)
-        self.assertEqual(request_params[0]["max_num_departures"], "5")
+        self.assertEqual(request_params[0]["max_num_departures"], "10")
         self.assertEqual(request_params[0]["should_update_realtime"], "true")
 
     def test_transit_app_refresh_interval_reuses_cached_data(self):

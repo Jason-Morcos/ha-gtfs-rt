@@ -1,5 +1,8 @@
 {
   "name": "GTFS-Realtime",
   "render_readme": true,
-  "domains": ["sensor"]
+  "domains": [
+    "sensor"
+  ],
+  "homeassistant": "2025.6.0"
 }
