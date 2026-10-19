@@ -80,3 +80,47 @@ async def test_partial_or_empty_provider_health_is_scoped_to_each_sensor(
             return_value=now + timedelta(minutes=6),
         ):
             assert not b.available
+
+
+async def test_failed_stop_during_warmup_does_not_hide_healthy_empty_stop(hass):
+    def get(url, **kwargs):
+        if url == "https://example.org/good":
+            return Mock(status_code=200, json=Mock(return_value={
+                "code": 200, "data": {"entry": {"arrivalsAndDepartures": []}}
+            }))
+        raise RuntimeError("synthetic source failure")
+
+    data = PublicTransportData(
+        "https://example.org/trips", monitored_departures=[("R", "bad"), ("R", "good")],
+        stop_arrivals_url_template="https://example.org/{stop_id}",
+    )
+    with patch("custom_components.gtfs_rt.sensor.requests.get", side_effect=get):
+        await hass.async_add_executor_job(data.update)
+    failed = PublicTransportSensor(data, "bad", "R", "Failed", "failed")
+    healthy = PublicTransportSensor(data, "good", "R", "Healthy", "healthy")
+    assert not failed.available
+    assert healthy.available
+    assert healthy.state is None
+    assert healthy.extra_state_attributes["Problem reason"] is None
+
+
+async def test_transit_partial_batch_health_tracks_successful_empty_stops(hass):
+    mappings = [("R", str(i), f"AG:{i:03d}", "R") for i in range(101)]
+
+    def get(url, **kwargs):
+        if url == "https://example.org/trips" or "AG:100" in kwargs["params"]["global_stop_ids"]:
+            raise RuntimeError("synthetic source failure")
+        return Mock(status_code=200, json=Mock(return_value={"route_departures": []}))
+
+    data = PublicTransportData(
+        "https://example.org/trips", monitored_departures=[("R", "0"), ("R", "100")],
+        transit_api_key="synthetic", transit_departures=mappings,
+    )
+    with patch("custom_components.gtfs_rt.sensor.requests.get", side_effect=get):
+        await hass.async_add_executor_job(data.update)
+    healthy = PublicTransportSensor(data, "0", "R", "Healthy", "healthy")
+    failed = PublicTransportSensor(data, "100", "R", "Failed", "failed")
+    assert healthy.available
+    assert healthy.state is None
+    assert healthy.extra_state_attributes["Problem reason"] is None
+    assert not failed.available

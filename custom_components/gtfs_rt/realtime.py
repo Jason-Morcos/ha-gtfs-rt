@@ -29,6 +29,8 @@ class StopDetails:
     trip_start_date: str | None = None
     trip_start_time: str | None = None
     route_id: str | None = None
+    # Stop sequences are provider-specific: OBA indices are not GTFS sequences.
+    _stop_sequence: tuple[str, int] | None = field(default=None, repr=False)
     # Keep original reports when a preferred provider omits service-instance
     # metadata. Later cache/stop-wide merges must retain the same evidence.
     _reports: tuple[StopDetails, ...] = field(default=(), compare=False, repr=False)
@@ -71,7 +73,7 @@ def _shares_trip_id(detail, group, ambiguities, match_routes=False):
     ]
     if not candidates:
         return False
-    ambiguous_instances, ambiguous_aliases = ambiguities
+    ambiguous_instances, ambiguous_aliases, ambiguous_visits = ambiguities
     instance = (detail.trip_start_date, detail.trip_start_time)
     for candidate in candidates:
         # Every report in a group must agree. A third provider's unprefixed ID
@@ -89,6 +91,13 @@ def _shares_trip_id(detail, group, ambiguities, match_routes=False):
                 != str(candidate.trip_id).partition("_")[0]
             ):
                 return False
+        visit, other_visit = detail._stop_sequence, candidate._stop_sequence
+        if visit and other_visit and visit[0] == other_visit[0] and visit != other_visit:
+            return False
+        # An unindexed provider cannot bridge separate visits on a loop trip.
+        for namespace in ambiguous_visits.get(canonical_id, ()):
+            if not (visit and other_visit and visit == other_visit and visit[0] == namespace):
+                return False
         other = (candidate.trip_start_date, candidate.trip_start_time)
         if any(
             left and right and left != right for left, right in zip(instance, other)
@@ -102,11 +111,14 @@ def _shares_trip_id(detail, group, ambiguities, match_routes=False):
 
 
 def _trip_ambiguities(details):
-    dates, times, prefixes, source_ids = {}, {}, {}, {}
+    dates, times, prefixes, source_ids, visits = {}, {}, {}, {}, {}
     for detail in details:
         canonical = _canonical_trip_id(detail.trip_id)
         if not canonical:
             continue
+        if detail._stop_sequence:
+            namespace, sequence = detail._stop_sequence
+            visits.setdefault((canonical, namespace), set()).add(sequence)
         if detail.trip_start_date:
             dates.setdefault(canonical, set()).add(detail.trip_start_date)
         if detail.trip_start_time:
@@ -128,7 +140,11 @@ def _trip_ambiguities(details):
     aliases.update(
         key for (key, _source), values in source_ids.items() if len(values) > 1
     )
-    return instances, aliases
+    ambiguous_visits = {}
+    for (canonical, namespace), sequences in visits.items():
+        if len(sequences) > 1:
+            ambiguous_visits.setdefault(canonical, set()).add(namespace)
+    return instances, aliases, ambiguous_visits
 
 
 def _within_duplicate_window(detail: StopDetails, group: list[StopDetails]) -> bool:
@@ -321,12 +337,13 @@ def _occupancy(*values):
 
 def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
     """Convert an OBA arrival row into StopDetails."""
-    predicted_ms = int(
-        item.get("predictedArrivalTime") or item.get("predictedDepartureTime") or 0
-    )
-    scheduled_ms = int(
-        item.get("scheduledArrivalTime") or item.get("scheduledDepartureTime") or 0
-    )
+    predicted_departure = int(item.get("predictedDepartureTime") or 0)
+    predicted_ms = predicted_departure or int(item.get("predictedArrivalTime") or 0)
+    # Keep delay relative to the same event when only arrival predictions exist.
+    scheduled_fields = ("scheduledDepartureTime", "scheduledArrivalTime")
+    if predicted_ms and not predicted_departure:
+        scheduled_fields = tuple(reversed(scheduled_fields))
+    scheduled_ms = int(item.get(scheduled_fields[0]) or item.get(scheduled_fields[1]) or 0)
     chosen_ms = predicted_ms or scheduled_ms
     if chosen_ms <= 0:
         return None
@@ -364,6 +381,9 @@ def build_onebusaway_stop_details(item: dict) -> StopDetails | None:
             else None
         ),
         route_id=_string_or_none(item.get("routeId")),
+        _stop_sequence=("onebusaway", item["stopSequence"])
+        if type(item.get("stopSequence")) is int and item["stopSequence"] >= 0
+        else None,
     )
 
 
@@ -376,6 +396,8 @@ def filter_onebusaway_arrivals(
     matches: list[StopDetails] = []
     for item in _list(arrivals):
         if not isinstance(item, dict):
+            continue
+        if item.get("departureEnabled") is False:
             continue
         if not route_id_matches(configured_route, item.get("routeId")):
             continue

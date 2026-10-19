@@ -50,6 +50,8 @@ class ScheduleResilienceTests(unittest.TestCase):
         status = validator(files, now).get_status("R", "S", now)
         self.assertTrue(status.route_serves_stop)
         self.assertFalse(status.is_config_problem)
+        self.assertTrue(status.service_today)
+        self.assertFalse(status.service_expected_now)
         self.assertIsNone(status.next_scheduled_departure)
 
     def test_dropoff_only_stop_does_not_offer_a_departure(self):
@@ -58,6 +60,7 @@ class ScheduleResilienceTests(unittest.TestCase):
         now = dt.datetime(2026, 4, 3, 11, 45, tzinfo=UTC)
         status = validator(files, now).get_status("R", "S", now)
         self.assertTrue(status.route_serves_stop)
+        self.assertFalse(status.service_today)
         self.assertFalse(status.service_expected_now)
 
     def test_calendar_exception_removes_previous_day_service(self):

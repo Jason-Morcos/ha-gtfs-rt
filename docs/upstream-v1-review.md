@@ -76,3 +76,42 @@ Regression coverage is in `tests/test_second_pass.py`,
 `tests_ha/test_provider_regressions.py`. All fixtures are synthetic. This evidence
 remains source/test evidence; release, installation and live provider verification
 remain separate.
+
+
+## Broader fork audit
+
+The additional fork review reproduced and repaired these independent defects:
+
+- A failed OneBusAway stop during initial cache warmup prevented later stops
+  from being fetched. Continue independent stop requests after ordinary failures;
+  retain the server-wide stop on HTTP 429 and merge healthy results with fallback.
+  Track warmup attempts separately from successful refreshes so persistent
+  failures cannot keep triggering multi-stop startup bursts.
+- Use OneBusAway departure times while a vehicle is boarding, calculate delay
+  against the matching scheduled event, and omit explicit dropoff-only records.
+- Keep separate visits to a stop on a loop trip. Stop-sequence evidence remains
+  provider-specific: OneBusAway uses zero-based indices, unlike GTFS sequences.
+  Ambiguous unindexed reports cannot bridge distinct known visits.
+- Publish each successful Transit batch even if another batch fails. Preserve
+  unexpired failed-batch cache, clear successful empty results, and scope fresh
+  empty-source coverage to the actual successful stops. Ordinary failures do not
+  starve later batches; HTTP 429 stops further requests and retains backoff.
+- A boardable untimed intermediate stop has service on its active calendar days,
+  even though its precise departure remains unknown.
+- Static frequency templates are offsets rather than literal departures.
+  Compressed exact schedules calculate the next run arithmetically; non-exact
+  frequencies expose service windows without fabricating departure timestamps.
+  Both retain agency-timezone, calendar, carryover, and snapshot guarantees.
+
+The semantics follow the [GTFS schedule reference](https://gtfs.org/documentation/schedule/reference/#frequenciestxt)
+and [OneBusAway arrival/departure reference](https://developer.onebusaway.org/api/where/elements/arrival-and-departure).
+Regression coverage is in `tests/test_fork_audit.py`,
+`tests/test_schedule_frequencies.py`, and `tests_ha/test_provider_regressions.py`.
+All new fixtures use synthetic stops, routes and credentials.
+
+Read-only Home Assistant background checks confirmed HACS v1.5.2 installed on
+HA 2026.10.1 with fresh entity reports. Bounded historical logs included a
+stop-arrivals connection failure with fallback and a slow-update warning.
+Those logs establish operational context, not that the synthetic bugs caused
+that incident or that this PR is installed. No live configuration, log level,
+restart, reload or integration installation was changed.

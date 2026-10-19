@@ -4,6 +4,7 @@ import csv
 import datetime as dt
 import io
 import logging
+import math
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
@@ -32,6 +33,22 @@ def parse_gtfs_seconds(value: str) -> int:
     """Parse a GTFS HH:MM:SS string into total seconds."""
     hours, minutes, seconds = (int(part) for part in value.split(":"))
     return hours * 3600 + minutes * 60 + seconds
+
+
+@dataclass(frozen=True)
+class FrequencyWindow:
+    """A frequency interval shifted from the first stop to a monitored stop."""
+
+    start_seconds: int
+    end_seconds: int
+    headway_seconds: int
+    exact: bool
+
+    def next_at_or_after(self, seconds: float) -> int | None:
+        """Find a scheduled run without expanding every headway into a list."""
+        index = max(0, math.ceil((seconds - self.start_seconds) / self.headway_seconds))
+        departure = self.start_seconds + index * self.headway_seconds
+        return departure if departure < self.end_seconds else None
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,8 @@ class StaticScheduleValidator:
         self._stop_ids: set[str] = set()
         self._route_labels: dict[str, str] = {}
         self._route_stop_service_ids: dict[tuple[str, str], set[str]] = defaultdict(set)
+        self._untimed_service_ids: dict[tuple[str, str], set[str]] = defaultdict(set)
+        self._frequency_windows_by_service: dict[tuple[str, str, str], list[FrequencyWindow]] = defaultdict(list)
         self._departures_by_service: dict[tuple[str, str, str], list[int]] = defaultdict(list)
         self._calendar: dict[str, tuple[set[int], dt.date, dt.date]] = {}
         self._calendar_exceptions: dict[dt.date, dict[str, bool]] = defaultdict(dict)
@@ -178,8 +197,24 @@ class StaticScheduleValidator:
              if route == route_id and stop == stop_id and values),
             default=0,
         )
+        frequency_by_service = {
+            service: windows
+            for (route, stop, service), windows in self._frequency_windows_by_service.items()
+            if route == route_id and stop == stop_id
+        }
+        max_seconds = max(
+            max_seconds,
+            max((window.end_seconds for windows in frequency_by_service.values()
+                 for window in windows), default=0),
+        )
         departures = []
-        service_today = False
+        frequency_expected = False
+        # An untimed intermediate stop still has calendar service. Its exact
+        # departure remains unknown; drop-off-only rows never enter this set.
+        service_today = bool(
+            self._untimed_service_ids.get((route_id, stop_id), set())
+            & self._active_service_ids(today)
+        )
         # Include carry-over service days for GTFS times such as 25:10:00,
         # plus the following day when it falls within the active window.
         previous_days = max_seconds // 86400 + 1
@@ -203,8 +238,38 @@ class StaticScheduleValidator:
                     if current_service_day or carries_over or within_active_window:
                         departures.append(departure)
 
+                for window in frequency_by_service.get(service_id, []):
+                    lower_seconds = (lower - anchor).total_seconds()
+                    upper_seconds = (upper - anchor).total_seconds()
+                    midnight_seconds = (midnight - anchor).total_seconds()
+                    tomorrow_seconds = (tomorrow - anchor).total_seconds()
+                    if window.exact:
+                        first_in_window = window.next_at_or_after(lower_seconds)
+                        frequency_expected |= (
+                            first_in_window is not None and first_in_window <= upper_seconds
+                        )
+                        first_today = window.next_at_or_after(midnight_seconds)
+                        if offset == 0 or (first_today is not None and first_today < tomorrow_seconds):
+                            service_today = True
+                        upcoming = window.next_at_or_after((now_instant - anchor).total_seconds())
+                        if upcoming is not None and (offset <= 0 or upcoming <= upper_seconds):
+                            departures.append(anchor + dt.timedelta(seconds=upcoming))
+                    else:
+                        # Non-exact service promises a headway during this
+                        # interval, not specific departure instants. The end
+                        # remains exclusive, including at downstream stops.
+                        frequency_expected |= (
+                            window.start_seconds <= upper_seconds
+                            and window.end_seconds > lower_seconds
+                        )
+                        if offset == 0 or (
+                            window.start_seconds < tomorrow_seconds
+                            and window.end_seconds > midnight_seconds
+                        ):
+                            service_today = True
+
         departures.sort()
-        service_expected_now = any(lower <= departure <= upper for departure in departures)
+        service_expected_now = frequency_expected or any(lower <= departure <= upper for departure in departures)
         next_departure = next((departure for departure in departures if departure >= now_instant), None)
         if next_departure is not None and timezone:
             # Entity attributes are displayed in the caller's HA timezone.
@@ -256,7 +321,8 @@ class StaticScheduleValidator:
             candidate._parse_schedule(archive)
         for field in (
             "_route_ids", "_stop_ids", "_route_labels", "_route_stop_service_ids",
-            "_departures_by_service", "_calendar", "_calendar_exceptions", "_agency_timezone",
+            "_departures_by_service", "_untimed_service_ids", "_frequency_windows_by_service",
+            "_calendar", "_calendar_exceptions", "_agency_timezone",
         ):
             setattr(self, field, getattr(candidate, field))
 
@@ -301,6 +367,20 @@ class StaticScheduleValidator:
                     continue
                 trip_to_route_service[row["trip_id"]] = (route_id, row["service_id"])
 
+        frequencies = defaultdict(list)
+        for row in self._rows(archive, "frequencies.txt"):
+            if row["trip_id"] not in trip_to_route_service:
+                continue
+            start = parse_gtfs_seconds(row["start_time"])
+            end = parse_gtfs_seconds(row["end_time"])
+            headway = int(row["headway_secs"])
+            exact = row.get("exact_times") or "0"
+            if start >= end or headway <= 0 or exact not in {"0", "1"}:
+                raise ValueError("Invalid GTFS frequency interval")
+            frequencies[row["trip_id"]].append((start, end, headway, exact == "1"))
+
+        first_stop_times = {}
+        monitored_frequency_times = []
         with archive.open("stop_times.txt") as stop_time_file:
             for row in csv.DictReader(io.TextIOWrapper(stop_time_file, "utf-8-sig")):
                 trip_id = row["trip_id"]
@@ -309,17 +389,45 @@ class StaticScheduleValidator:
                     continue
 
                 stop_id = row["stop_id"]
+                departure_value = row.get("departure_time") or row.get("arrival_time")
+                departure_seconds = None
+                if trip_id in frequencies:
+                    # CSV rows need not follow stop_sequence. The template's
+                    # first stop may also be outside the monitored stop set.
+                    sequence = int(row["stop_sequence"])
+                    departure_seconds = parse_gtfs_seconds(departure_value) if departure_value else None
+                    if trip_id not in first_stop_times or sequence < first_stop_times[trip_id][0]:
+                        first_stop_times[trip_id] = (sequence, departure_seconds)
                 if stop_id not in self._monitored_stops:
                     continue
 
                 route_id, service_id = trip_details
                 self._route_stop_service_ids[(route_id, stop_id)].add(service_id)
-                departure_value = row.get("departure_time") or row.get("arrival_time")
-                if not departure_value or row.get("pickup_type") == "1":
+                if row.get("pickup_type") == "1":
+                    continue
+                if not departure_value:
+                    self._untimed_service_ids[(route_id, stop_id)].add(service_id)
                     continue
 
-                departure_seconds = parse_gtfs_seconds(departure_value)
-                self._departures_by_service[(route_id, stop_id, service_id)].append(departure_seconds)
+                if trip_id in frequencies:
+                    monitored_frequency_times.append((trip_id, stop_id, departure_seconds))
+                else:
+                    self._departures_by_service[(route_id, stop_id, service_id)].append(
+                        parse_gtfs_seconds(departure_value)
+                    )
+
+        for trip_id, stop_id, departure_seconds in monitored_frequency_times:
+            first_seconds = first_stop_times[trip_id][1]
+            if first_seconds is None:
+                raise ValueError("Frequency trip has no first-stop departure time")
+            stop_offset = departure_seconds - first_seconds
+            if stop_offset < 0:
+                raise ValueError("Frequency stop precedes its first stop")
+            route_id, service_id = trip_to_route_service[trip_id]
+            self._frequency_windows_by_service[(route_id, stop_id, service_id)].extend(
+                FrequencyWindow(start + stop_offset, end + stop_offset, headway, exact)
+                for start, end, headway, exact in frequencies[trip_id]
+            )
 
         for departure_list in self._departures_by_service.values():
             departure_list.sort()

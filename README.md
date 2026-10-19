@@ -132,7 +132,7 @@ When `static_schedule_url` is configured, each sensor also adds:
 - `Next scheduled departure`
 - `Problem reason`
 
-Schedule validation accepts either `calendar.txt` or `calendar_dates.txt` (or both), uses the feed's `agency_timezone`, and includes previous service days for times after `24:00:00`. When an older feed omits `agency.txt`, validation falls back to Home Assistant's configured timezone. Failed static-feed refreshes report `schedule_lookup_failed` and retry after five minutes; they do not replace the last complete schedule with a partially parsed archive.
+Schedule validation accepts either `calendar.txt` or `calendar_dates.txt` (or both), uses the feed's `agency_timezone`, and includes previous service days for times after `24:00:00`. When an older feed omits `agency.txt`, validation falls back to Home Assistant's configured timezone. Untimed intermediate stops retain calendar service without inventing a departure time. Static frequency schedules respect their service windows and stop offsets; only `exact_times=1` produces precise scheduled departures. Failed static-feed refreshes report `schedule_lookup_failed` and retry after five minutes; they do not replace the last complete schedule with a partially parsed archive.
 
 Realtime timestamps are compared as UTC instants and displayed in Home Assistant's configured timezone, including across daylight-saving transitions. Canceled GTFS-RT trips, deleted feed entities, skipped stops, and stops marked `NO_DATA` do not create predictions. Expired predictions are omitted between feed refreshes. Missing occupancy and delay stay unknown; an explicitly reported zero delay remains zero.
 
@@ -175,7 +175,9 @@ If `transit_api_key` and `transit_global_stop_id` are configured, Transit app st
 
 Transit API requests are batched by Transit global stop id, capped at the API's 100-stop request limit, and internally paced so one feed does not repeatedly refresh inside a one-minute window. HTTP `429` responses honor `Retry-After` when present. Departures from Transit, OneBusAway, GTFS-RT, and schedule fallbacks are merged by trip id when available, then by a narrow cross-source time window, so duplicate provider reports do not appear as separate adjacent arrivals while same-source close headways remain intact.
 
-Because the OneBusAway REST API is a stop-level endpoint and uses API-key throttling, the integration automatically deduplicates repeated stop IDs, warms the cache on startup, then refreshes only one unique stop per update cycle in round-robin order while honoring `Retry-After` on HTTP `429` responses. This reduces steady-state request volume for multi-stop feeds without requiring extra YAML tuning.
+Successful Transit batches remain cached when another batch fails, including successful empty results. Deduplication preserves separately indexed visits to the same stop on loop trips.
+
+Because the OneBusAway REST API is a stop-level endpoint and uses API-key throttling, the integration automatically deduplicates repeated stop IDs, warms the cache on startup, then refreshes only one unique stop per update cycle in round-robin order while honoring `Retry-After` on HTTP `429` responses. This reduces steady-state request volume for multi-stop feeds without requiring extra YAML tuning. A failed stop does not prevent other stops from warming their caches. Explicit dropoff-only records are omitted, and departure times keep boarding vehicles visible.
 
 The legacy `sensor: - platform: gtfs_rt` format still works, but it will not create route devices and is now considered deprecated.
 
@@ -194,20 +196,17 @@ me or open an issue if you find other good sources.
 
 ## Reporting an Issue
 
-1. Setup your logger to print debug messages for this component using:
-```yaml
-logger:
-  default: info
-  logs:
-    custom_components.gtfs_rt: debug
-```
-2. Restart HA
-3. Verify you're still having the issue
-4. File an issue in this Github Repository containing your HA log (Developer section > Info > Load Full Home Assistant Log)
-   * You can paste your log file at pastebin https://pastebin.com/ and submit a link.
-   * Please include details about your setup (Pi, NUC, etc, docker?, HASSOS?)
-   * The log file can also be found at `/<config_dir>/home-assistant.log`
+Include your Home Assistant version, integration version, expected behavior,
+and a small description of the failure. For config-entry installations, download
+integration diagnostics from Settings → Devices & services → GTFS-Realtime.
+The integration omits credentials and redacts configured URLs in that download.
+Review the file before sharing it.
 
+If logs are needed, share the relevant `custom_components.gtfs_rt` errors and
+nearby traceback only. Remove credentials, private URLs, personal locations, and
+unrelated Home Assistant details before posting. Debug logging can be enabled
+for `custom_components.gtfs_rt` while reproducing a problem, then restored to its
+previous level.
 
 ## Development checks
 
